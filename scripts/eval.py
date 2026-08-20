@@ -60,19 +60,25 @@ class CaseResult:
 
 
 def _retrieved_set(pipe: RagPipeline, case: dict, top_k: int = 8):
-    """The (regulation, article) pairs the real pipeline path would hand
-    to the LLM for this case — via _ask_prompt/_compare_prompt directly,
-    so jurisdiction routing and scenario decomposition are exercised
-    exactly as ask()/compare() would use them.
+    """The (regulation, article) pairs AND (regulation, document_label)
+    pairs the real pipeline path would hand to the LLM for this case —
+    via _ask_prompt/_compare_prompt directly, so jurisdiction routing and
+    scenario decomposition are exercised exactly as ask()/compare() would
+    use them. Document-label pairs let a case require "the Board decision
+    was retrieved" separately from "statute Article N was retrieved" —
+    for several cases the documented ground truth is the Board decision,
+    not the statute article, once that decision is actually indexed.
     """
     if case["mode"] == "compare":
         results, _ = pipe._compare_prompt(
             case["question"], case["reg_a"], case["reg_b"], top_k_each=4)
     else:
         results, _ = pipe._ask_prompt(case["question"], case.get("regulation"), top_k)
-    pairs = {(r.metadata["regulation"], str(r.metadata["article_number"]))
-            for r in results}
-    return pairs, results
+    article_pairs = {(r.metadata["regulation"], str(r.metadata["article_number"]))
+                     for r in results}
+    doc_pairs = {(r.metadata["regulation"], r.metadata["document_label"])
+                for r in results if r.metadata.get("document_label")}
+    return article_pairs, doc_pairs, results
 
 
 def grade_case(pipe: RagPipeline, case: dict, indexed: set[str],
@@ -84,6 +90,7 @@ def grade_case(pipe: RagPipeline, case: dict, indexed: set[str],
     if case["mode"] == "compare":
         regs_needed = {case["reg_a"], case["reg_b"]}
     regs_needed |= {m["regulation"] for m in checks.get("must_retrieve_articles", [])}
+    regs_needed |= {m["regulation"] for m in checks.get("must_retrieve_documents", [])}
     regs_needed -= {None}
     if regs_needed - indexed:
         return CaseResult(id=case["id"], mode=case["mode"], language=case["language"],
@@ -93,15 +100,20 @@ def grade_case(pipe: RagPipeline, case: dict, indexed: set[str],
                           fail_condition=case.get("fail_condition", ""))
 
     must = checks.get("must_retrieve_articles", [])
-    if must:
-        retrieved, _ = _retrieved_set(pipe, case)
+    must_docs = checks.get("must_retrieve_documents", [])
+    if must or must_docs:
+        retrieved_articles, retrieved_docs, _ = _retrieved_set(pipe, case)
         for m in must:
             pair = (m["regulation"], str(m["article"]))
-            if pair not in retrieved:
+            if pair not in retrieved_articles:
                 reasons.append(f"retrieval miss: {m['regulation']} Art {m['article']}")
+        for m in must_docs:
+            pair = (m["regulation"], m["document_label"])
+            if pair not in retrieved_docs:
+                reasons.append(f"retrieval miss: {m['regulation']} {m['document_label']}")
 
     answer, sources_display = "", []
-    checked_anything = bool(must)
+    checked_anything = bool(must or must_docs)
 
     if use_llm:
         if case["mode"] == "compare":

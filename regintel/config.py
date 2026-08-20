@@ -116,11 +116,13 @@ REGULATIONS = {
 # The KVKK statute text alone is not the full picture: the *operative*
 # measures for several obligations (e.g. what "adequate security measures"
 # means for special-category data) live in Kurul (Board) decisions and
-# official guidance, not the law itself. These are NOT ingested by default
-# — see data/raw/README.md for exactly which documents to obtain and from
-# where (kvkk.gov.tr). Each entry here is a placeholder: ingestion looks
-# for data/raw/<id>.txt and, once you've dropped the real text in, parses
-# it with parse_decision_text() instead of the statute path.
+# official guidance, not the law itself. Ingestion looks for
+# data/raw/<id>.txt and parses it with parse_decision_text() instead of
+# the statute path — see data/raw/README.md for where each one comes from
+# (kvkk.gov.tr). No entry for the 7499 amendment: the current KVKK
+# statute text (data/raw/KVKK.txt) already carries those amendments
+# inline as "(Değişik:2/3/2024-7499/... md.)" annotations on the
+# affected articles, so a separate summary document would be redundant.
 DOCUMENTS = {
     "KVKK-KK-2018-10": {
         "regulation": "KVKK",
@@ -151,17 +153,6 @@ DOCUMENTS = {
         "document_label": "Kurul Kararı 2025/1572",
         "full_name": "VERBİS kayıt istisna kriterlerinin güncellenmesi (04.09.2025)",
         "url": "https://www.kvkk.gov.tr/",
-        "language": "tr",
-    },
-    "KVKK-7499-AMENDMENT-NOTES": {
-        "regulation": "KVKK",
-        "doc_type": "guideline",
-        "doc_date": "2024-03-02",
-        "in_force": True,
-        "document_label": "7499 Sayılı Kanun Değişiklik Notları",
-        "full_name": ("7499 sayılı Kanun ile KVKK Madde 6 ve Madde 9 üzerinde "
-                      "yapılan değişikliklerin özeti"),
-        "url": "https://www.mevzuat.gov.tr/",
         "language": "tr",
     },
 }

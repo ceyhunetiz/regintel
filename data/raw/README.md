@@ -1,67 +1,50 @@
-# Missing corpus: KVKK Board decisions & guidance
+# KVKK corpus: statute + Board decisions & guidance
 
-The 20-case evaluation (`Reponses/RegIntel_Evaluation_Report_2026-08-20.md`)
-found that roughly half the eval set's ground truth lives in documents this
-corpus doesn't index yet. The statute (`KVKK.pdf`) alone doesn't say what
-"adequate security measures" *means* for special-category data — that's in
-Board (Kurul) decisions and official guidance. Obtain each document below
-and save it as plain text at the path shown, then run:
+Status: **all four documents are now in place and indexed** (as of
+2026-08-21). This note documents what's here and where it came from, for
+anyone re-ingesting or extending the corpus later.
+
+## What's indexed
 
 ```
-python scripts/ingest.py KVKK-KK-2018-10
-python scripts/ingest.py KVKK-REHBER-VERI-GUVENLIGI
-python scripts/ingest.py KVKK-KK-2025-1572
-python scripts/ingest.py KVKK-7499-AMENDMENT-NOTES
+python scripts/ingest.py            # re-ingest everything in this folder
 ```
 
-(or `python scripts/ingest.py` with no arguments to pick up everything
-present in this folder, statutes and documents alike).
+- **`KVKK.txt`** (statute) — the current, consolidated KVKK text (33
+  articles), including the Law No. 7499 (March 2024) amendments annotated
+  inline on the articles they changed (e.g. Article 9 carries
+  "(Değişik:2/3/2024-7499/34 md.)"). This replaced the earlier
+  `KVKK.pdf` source, which didn't carry those amendments.
+- **`KVKK-KK-2018-10.txt`** (`doc_type: board_decision`) — Kurul Kararı
+  2018/10 (31.01.2018, RG 07.03.2018 No. 30353): the operative "yeterli
+  önlemler" for processing special-category (özel nitelikli) personal
+  data. Nests lettered sub-items under numbered top-level items ("1-",
+  "2-"... each with its own "a) b) c)..."), which `parse_decision_text()`
+  labels hierarchically ("2a", "3a", ...) so repeated letters across
+  different numbered groups don't collide.
+- **`KVKK-REHBER-VERI-GUVENLIGI.txt`** (`doc_type: guideline`) — Kişisel
+  Veri Güvenliği Rehberi, KVKK's technical/administrative measures guide.
+- **`KVKK-KK-2025-1572.txt`** (`doc_type: board_decision`) — Kurul Kararı
+  2025/1572 (04.09.2025): revised VERBİS registration exemption criteria.
 
-## Documents to obtain
-
-All four are published by the Kişisel Verilerin Korunması Kurumu at
-**kvkk.gov.tr** (Kararlar / Mevzuat sections) or **mevzuat.gov.tr** for the
-7499 amendment. Save the plain text of each as the filename listed.
-
-- **`KVKK-KK-2018-10.txt`** — Kurul Kararı 2018/10 (31.01.2018, RG
-  07.03.2018 No. 30353): the operative "yeterli önlemler" for processing
-  special-category (özel nitelikli) personal data — separate policy,
-  access authorisations with periodic review, cryptographic encryption
-  with keys held in a separate environment, encrypted transfer (KEP /
-  corporate e-mail, VPN/sFTP), etc. This is the single most-cited-missing
-  source in the eval report (Q4–Q6, Q8, Q11, S1, S3, S4).
-
-- **`KVKK-REHBER-VERI-GUVENLIGI.txt`** — Kişisel Veri Güvenliği Rehberi
-  (KVKK's technical/administrative measures guide). Needed for the
-  "düzenli olarak" (regular, no fixed count) testing language that Q1/Q2
-  depend on, and the firewall/backup measures list S4 probes.
-
-- **`KVKK-KK-2025-1572.txt`** — Kurul Kararı 2025/1572 (04.09.2025):
-  revised VERBİS registration exemption criteria. Needed for S8; without
-  it, the system should say its VERBİS criteria may be stale rather than
-  reciting old thresholds as current (see the out-of-corpus prompt rule
-  in `regintel/generation/prompts.py`).
-
-- **`KVKK-7499-AMENDMENT-NOTES.txt`** — a short summary of what Law No.
-  7499 (March 2024) changed in KVKK Art 6 and Art 9. Needed for Q9. This
-  one doesn't need to be the full amending law text — a clear summary of
-  which articles changed and how is enough for the pipeline to answer
-  "yes, 7499 changed X" instead of denying the amendment exists.
+All are published by the Kişisel Verilerin Korunması Kurumu at
+**kvkk.gov.tr** (Kararlar / Mevzuat sections).
 
 ## Format
 
-Plain text, one file per document. `parse_decision_text()`
-(`regintel/ingestion/parser.py`) splits on lettered/numbered list markers
-("a)", "b)", "1)"...) — the natural structure of a Kurul kararı's
-operative measures list. A document with fewer than two such markers
-(e.g. the short 7499 amendment notes) is indexed as a single section,
-which is fine.
+Plain text, one file per document. Statute text (`doc_type: statute`,
+`config.REGULATIONS`) goes through `parse_plain_text()` — "Madde N"
+headings. Board decisions and guidance (`config.DOCUMENTS`) go through
+`parse_decision_text()` — numbered/lettered list markers ("1-", "a)",
+...). A document with fewer than two such markers is indexed as a single
+section.
 
-## Why this isn't done for you
+## Why this wasn't done automatically
 
 This is regulatory/legal source material published by a Turkish
 government authority — not something to reconstruct from a paraphrased
 description. Fabricating "placeholder" legal text in a compliance tool's
-corpus would be actively dangerous: it could get cited as if authoritative.
-The ingestion code, metadata schema (`doc_type` / `doc_date` / `in_force`),
-and decision-aware parser are ready; only the actual documents are missing.
+corpus would be actively dangerous: it could get cited as if
+authoritative. The ingestion code, metadata schema (`doc_type` /
+`doc_date` / `in_force`), and decision-aware parser were built ahead of
+time; the actual documents were sourced and dropped in afterward.
