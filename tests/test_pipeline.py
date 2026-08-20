@@ -16,8 +16,24 @@ from regintel import config
 from regintel.ingestion.parser import parse_plain_text, parse_eurlex_html, parse_decision_text
 from regintel.ingestion.chunker import Chunk, chunk_articles
 from regintel.retrieval.store import RegulationStore
+from regintel.generation import prompts
 from regintel.generation.rag import RagPipeline
-from regintel.generation.llm import EchoLLM
+from regintel.generation.llm import LLM, EchoLLM
+
+
+class _FakeLLM(LLM):
+    """Test double: returns a scripted response for the DECOMPOSE_PROMPT
+    call and just echoes its input back for anything else (a no-op
+    "rewrite") — lets tests exercise the real decomposition parsing/
+    merge logic without needing Ollama."""
+
+    def __init__(self, decomposition: str):
+        self.decomposition = decomposition
+
+    def chat(self, system: str, user: str) -> str:
+        if system == prompts.DECOMPOSE_PROMPT:
+            return self.decomposition
+        return user
 
 # Synthetic fixture — NOT real regulation text.
 MOCK_REG_A = """
@@ -329,3 +345,75 @@ def test_multi_regulation_question_retrieves_all_named_regulations():
         regulation=None, top_k=6)
     regs = {r.metadata["regulation"] for r in results}
     assert regs == {"KVKK", "DORA"}
+
+
+# --- Scenario decomposition -------------------------------------------------
+
+
+def test_needs_decomposition_triggers_on_length_and_multi_regulation():
+    pipe = RagPipeline(store=RegulationStore(
+        persist_dir=tempfile.mkdtemp(), use_embeddings=False), llm=EchoLLM())
+
+    assert not pipe._needs_decomposition("KVKK'ya göre madde 6 nedir?")
+    assert pipe._needs_decomposition("x " * 300)  # well past the length threshold
+    assert pipe._needs_decomposition(
+        "Our Istanbul office and our EU bank subsidiary both process this data.")
+
+
+def test_decompose_question_returns_single_item_for_echollm():
+    pipe = RagPipeline(store=RegulationStore(
+        persist_dir=tempfile.mkdtemp(), use_embeddings=False), llm=EchoLLM())
+    assert pipe._decompose_question("anything") == ["anything"]
+
+
+def test_decompose_question_strips_numbering_and_junk_lines():
+    decomposition = "\n".join([
+        "1) Does the notes field create a special-category data issue?",
+        "",
+        "2. Is the nightly mirror to Germany a cross-border transfer?",
+        "ok",  # too short, should be dropped
+        "- Is disk-at-rest encryption required here?",
+    ])
+    pipe = RagPipeline(store=RegulationStore(
+        persist_dir=tempfile.mkdtemp(), use_embeddings=False),
+        llm=_FakeLLM(decomposition))
+    sub_qs = pipe._decompose_question("irrelevant, scripted response used")
+    assert len(sub_qs) == 3
+    assert all(not q[0].isdigit() and not q.startswith(("-", "."))
+              for q in sub_qs)
+    assert "special-category" in sub_qs[0]
+
+
+def test_scenario_decomposition_merges_per_issue_retrieval():
+    """S1/S3-style long scenario: retrieval must cover every issue the
+    decomposition step extracts, not just whichever one an unfiltered
+    single pass happens to favor."""
+    tmp = tempfile.mkdtemp()
+    s = RegulationStore(persist_dir=tmp, use_embeddings=False)
+    s.add_chunks(chunk_articles(parse_plain_text(MOCK_REG_A, "KVKK")))
+    s.add_chunks(chunk_articles(parse_plain_text(MOCK_REG_B, "DORA")))
+
+    scenario = "I run a small startup with customers in Turkey. " * 15
+    decomposition = "\n".join([
+        "What is the incident reporting deadline under KVKK?",
+        "What are the notification obligations under DORA?",
+    ])
+    pipe = RagPipeline(store=s, llm=_FakeLLM(decomposition))
+    results, prompt = pipe._ask_prompt(scenario, regulation=None, top_k=6)
+
+    assert "Issues identified" in prompt
+    regs = {r.metadata["regulation"] for r in results}
+    assert regs == {"KVKK", "DORA"}
+
+
+def test_short_question_never_triggers_decomposition_path():
+    """Latency guard: a normal short single-issue question must take the
+    plain ANSWER_TEMPLATE path, never the scenario path, regardless of
+    the LLM used."""
+    tmp = tempfile.mkdtemp()
+    s = RegulationStore(persist_dir=tmp, use_embeddings=False)
+    s.add_chunks(chunk_articles(parse_plain_text(MOCK_REG_A, "MOCK-A")))
+    pipe = RagPipeline(store=s, llm=EchoLLM())
+    _, prompt = pipe._ask_prompt(
+        "What must be in the third-party register?", regulation=None, top_k=6)
+    assert "Issues identified" not in prompt

@@ -120,6 +120,48 @@ Question: {question}
 Answer the question using only the sources above, with citations.
 """
 
+# Extracts discrete legal sub-questions from a long, messy first-person
+# scenario, so retrieval can run once per issue instead of once for the
+# whole message (a single pass catches at most one of the 3-4 issues a
+# scenario question typically buries).
+DECOMPOSE_PROMPT = """\
+The user's message describes a real-world scenario that may raise \
+several distinct regulatory issues at once. Extract the discrete legal \
+sub-questions it raises — one per line, no numbering, no bullets, no \
+explanation. Each sub-question must be self-contained and answerable on \
+its own: carry over enough concrete detail from the scenario that it \
+makes sense out of context (e.g. "Does storing health data in a \
+free-text notes field without encryption comply with KVKK Article 6?" \
+rather than just "encryption?" or "notes field?"). Write between 2 and 5 \
+sub-questions, in the language the scenario was written in. Output ONLY \
+the sub-questions, one per line — nothing else."""
+
+# Used instead of ANSWER_TEMPLATE once a scenario has been decomposed
+# (see RagPipeline._decomposed_prompt). Sources are pooled from separate
+# per-issue retrieval passes, so a source relevant to one issue is not
+# necessarily relevant to the others — the model has to judge each
+# source against the specific issue it might support.
+SCENARIO_ANSWER_TEMPLATE = """\
+{scope_note}The user's message below describes a scenario that raises \
+several distinct issues, extracted as the list below. Sources are \
+pooled from a separate retrieval pass per issue — a source's relevance \
+to one issue does not mean it is relevant to the others.
+
+Sources:
+{sources}
+
+Scenario: {question}
+
+Issues identified in the scenario:
+{issues}
+
+Answer issue by issue: give each issue listed above its own short, \
+clearly labelled section, citing only the sources that actually support \
+that issue's claims. If the sources do not cover a given issue, say so \
+for that issue specifically rather than skipping it or folding it into \
+another section.
+"""
+
 COMPARE_TEMPLATE = """\
 {scope_note}Sources from {reg_a}:
 {sources_a}

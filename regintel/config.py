@@ -44,6 +44,17 @@ MIN_BM25_RELATIVE_SCORE = 0.15
 # crowding out other relevant articles entirely.
 MAX_CHUNKS_PER_ARTICLE = 2
 
+# A first-person scenario question ("I'm a backend developer at a payments
+# startup...") often buries 3-4 distinct legal issues; a single retrieval
+# pass over the whole message catches at most one. Above this length (or
+# when jurisdiction routing detects 2+ regulations — see
+# _detect_required_regulations in rag.py) the pipeline first asks the LLM
+# to extract discrete sub-questions and retrieves per-issue instead.
+# Short, single-issue questions (the common case) never cross this
+# threshold, so their latency is unaffected.
+SCENARIO_DECOMPOSITION_ENABLED = True
+SCENARIO_LENGTH_THRESHOLD = 400  # characters
+
 # --- LLM -------------------------------------------------------------------
 # "ollama" = local model (default, fully offline)
 # "api"    = OpenAI-compatible endpoint (set API_BASE_URL/API_MODEL below

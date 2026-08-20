@@ -21,6 +21,10 @@ _REG_NAME_RE = re.compile(
 _DANGLING_PREP_RE = re.compile(
     r"\b(under|per|pursuant to|according to)\s*[.,]?\s*$", re.IGNORECASE)
 _ARTICLE_MENTION_RE = re.compile(r"\b(?:article|art\.?|madde)\s+(\d+)\b", re.IGNORECASE)
+# Strips leading numbering/bullets ("1.", "- ", "* ") from a decomposed
+# sub-question line — the prompt asks the LLM not to add these, but a
+# local 7-8B model doesn't reliably comply.
+_SUBQ_PREFIX_RE = re.compile(r"^[\s\-\*\d\.\)]+")
 
 # Contextual cues that imply a regulation applies even when its acronym is
 # never named — e.g. "payments startup in Istanbul" implies KVKK without
@@ -211,6 +215,11 @@ class RagPipeline:
 
     def _ask_prompt(self, question: str, regulation: str | None,
                      top_k: int) -> tuple[list[SearchResult], str]:
+        if self._needs_decomposition(question):
+            sub_questions = self._decompose_question(question)
+            if len(sub_questions) > 1:
+                return self._decomposed_prompt(question, sub_questions, regulation, top_k)
+
         # Auto-filter to a single named instrument even if the caller
         # left `regulation` unset (e.g. UI "All" mode) — see
         # _detect_single_regulation's docstring for why this matters.
@@ -238,6 +247,68 @@ class RagPipeline:
         prompt = prompts.ANSWER_TEMPLATE.format(
             scope_note=self._scope_note(regulation),
             sources=prompts.format_sources(results), question=question)
+        return results, prompt
+
+    def _needs_decomposition(self, question: str) -> bool:
+        """Trigger for scenario decomposition: a long message, or one
+        whose context cues already imply multiple regulations — both are
+        signs of a multi-issue scenario a single retrieval pass would
+        under-serve. Short single-issue questions (the common case) never
+        cross the length threshold, so their latency is unaffected.
+        """
+        if not config.SCENARIO_DECOMPOSITION_ENABLED:
+            return False
+        if len(question) > config.SCENARIO_LENGTH_THRESHOLD:
+            return True
+        return len(_detect_required_regulations(question)) >= 2
+
+    def _decompose_question(self, question: str) -> list[str]:
+        """Extract discrete legal sub-questions via one LLM call. Falls
+        back to [question] (i.e. "don't decompose") for EchoLLM or if the
+        call fails — same fallback pattern as _retrieval_query, and the
+        caller (_ask_prompt) already treats a single-item result as "no
+        decomposition happened" and continues down the normal path.
+        """
+        if isinstance(self.llm, EchoLLM):
+            return [question]
+        try:
+            raw = self.llm.chat(prompts.DECOMPOSE_PROMPT, question)
+        except Exception:
+            return [question]
+        sub_qs = [_SUBQ_PREFIX_RE.sub("", line).strip() for line in raw.splitlines()]
+        sub_qs = [q for q in sub_qs if len(q) > 8]  # drop stray blank/junk lines
+        return sub_qs[:5] if sub_qs else [question]
+
+    def _decomposed_prompt(self, question: str, sub_questions: list[str],
+                            regulation: str | None, top_k: int
+                            ) -> tuple[list[SearchResult], str]:
+        """Retrieval runs once per extracted issue and results are
+        merged (deduped by chunk id). `regulation` is the caller's
+        explicit filter, if any (e.g. the UI's regulation dropdown), and
+        is respected for every sub-question; when unset, each
+        sub-question detects its own regulation independently — a
+        multi-issue scenario often has different issues governed by
+        different instruments (see _decompose_question's docstring).
+        """
+        per_issue_k = max(top_k // len(sub_questions), 3)
+        results: list[SearchResult] = []
+        seen_ids: set[str] = set()
+        regs_covered: set[str] = set()
+        for sub_q in sub_questions:
+            sub_reg = regulation or _detect_single_regulation(sub_q)
+            sub_query = self._retrieval_query(sub_q)
+            for r in self.store.search(sub_query, top_k=per_issue_k, regulation=sub_reg):
+                if r.id not in seen_ids:
+                    seen_ids.add(r.id)
+                    results.append(r)
+            if sub_reg:
+                regs_covered.add(sub_reg)
+
+        scope_note = "".join(self._scope_note(r) for r in sorted(regs_covered))
+        issues = "\n".join(f"- {q}" for q in sub_questions)
+        prompt = prompts.SCENARIO_ANSWER_TEMPLATE.format(
+            scope_note=scope_note, sources=prompts.format_sources(results),
+            question=question, issues=issues)
         return results, prompt
 
     def _multi_regulation_search(self, query: str, regulations: set[str],
