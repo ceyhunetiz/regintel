@@ -1,0 +1,408 @@
+# Machine-runnable encoding of Reponses/Questions_for_Rag.pdf (20 cases:
+# Q1-Q12 direct, S1-S8 scenario), compiled against
+# Reponses/RegIntel_Evaluation_Report_2026-08-20.md's ground-truth
+# anchors. Run with scripts/eval.py.
+#
+# Two kinds of check per case:
+#   - `retrieval` checks (must_retrieve_articles) need no LLM — they run
+#     against store.search() directly, so `scripts/eval.py --llm echo`
+#     can grade them in CI without Ollama.
+#   - `answer` checks (forbid_regex / require_regex / require_no_citation
+#     / citations_from_only) grade the generated answer text and need a
+#     real LLM. These are graded HARD (pass/fail) when present, but only
+#     cover what the eval report itself judged reliably machine-checkable
+#     (numbers, specific citations, presence/absence of a footer) — most
+#     of what actually distinguishes a good answer here (did it correct
+#     the premise? did it separate instruments? was the reasoning sound?)
+#     is not reliably regex-checkable against free-text local-LLM output,
+#     and is left to `expected`/`fail_condition` for a human reader, same
+#     as scripts/eval_regression.py's existing philosophy for this
+#     project ("advisory, not as strict as the retrieval/citation checks").
+#
+# failure_mode tags mirror the PDF's own mapping: P1 cross-instrument
+# contamination, P2 citation integrity, P4 false-premise/temporal, P5
+# Board-decision corpus scope.
+
+cases:
+  - id: Q1
+    mode: ask
+    regulation: null
+    language: tr
+    failure_mode: []
+    question: "KVKK'ya göre yılda kaç kez güvenlik duvarı kontrolü yapmam gerekiyor?"
+    expected: >-
+      States no fixed frequency exists; cites the Rehber's "düzenli olarak"
+      language for zafiyet taraması / sızma testi. Must NOT invent a number.
+    fail_condition: "Any numeric answer, or citing an article that does not exist."
+    checks:
+      forbid_regex:
+        - '(?i)y[ıi]lda\s+\d+\s*kez'
+        - '(?i)\bayda\s+\d+\s*kez'
+
+  - id: Q2
+    mode: ask
+    regulation: null
+    language: en
+    failure_mode: [P1]
+    question: "Under DORA, GDPR and KVKK combined, how many firewall audits per year are mandatory for a bank?"
+    expected: >-
+      Distinguishes instruments: DORA Art 24(6) annual testing of critical
+      ICT systems / Art 26(1) TLPT every 3 years; GDPR Art 32(1)(d)
+      "regular testing"; KVKK Rehber "düzenli". Explicitly says none
+      prescribes a firewall-specific count.
+    fail_condition: "Blending the three into one invented composite number (P1-adjacent contamination)."
+    checks:
+      forbid_regex:
+        - '(?i)\b\d+\s*(firewall\s*)?audits?\s*(per|a|each)\s*year\b'
+
+  - id: Q3
+    mode: ask
+    regulation: null
+    language: tr
+    failure_mode: [P4]
+    question: "Müşterilerin doğum yeri verisi özel nitelikli kişisel veri olduğu için şifreleme zorunlu, değil mi? Hangi madde?"
+    expected: >-
+      Corrects the premise — doğum yeri is not in the Art 6 closed list —
+      then answers what actually applies (ordinary personal data, Art 12
+      security obligations).
+    fail_condition: "Accepting the premise and citing Art 6(4) / 2018-10 for birthplace data."
+    checks:
+      forbid_regex:
+        - '(?i)2018[/-]10'
+      must_retrieve_articles:
+        - {regulation: KVKK, article: "6"}
+
+  - id: Q4
+    mode: ask
+    regulation: KVKK
+    language: tr
+    failure_mode: []
+    question: >-
+      Bir proje yapıyorum; müşterilerin sağlık ve dernek üyeliği verilerini
+      bir veritabanında tutuyorum. Veritabanında erişim kontrolü yok. KVKK
+      açısından durumum nedir, hangi önlemler zorunlu?
+    expected: >-
+      Art 6(4) + Board Decision 2018/10: separate policy, defined access
+      authorisations with periodic review, cryptographic encryption at
+      rest with key separation. Flags measures as mandatory ("şart"), not
+      advisory. Depends on Board Decision 2018/10, which is not indexed
+      yet — see data/raw/README.md.
+    fail_condition: "Presenting the measures as merely advisory, or fabricating specific 2018/10 content not actually retrieved."
+    checks:
+      must_retrieve_articles:
+        - {regulation: KVKK, article: "6"}
+
+  - id: Q5
+    mode: ask
+    regulation: KVKK
+    language: tr
+    failure_mode: [P1]
+    question: >-
+      Bir proje yapıyorum; müşterilerin sağlık ve dernek üyeliği verilerini
+      bir veritabanında tutuyorum. Veritabanında erişim kontrolü, RBAC
+      uyguladık, ama veritabanı şifreli değil. Bu yeterli mi? KVKK
+      açısından durumum nedir, hangi önlemler zorunlu?
+    expected: >-
+      No — 2018/10 requires cryptographic measures for electronic
+      environments holding special categories; access control alone does
+      not satisfy the yeterli önlemler set.
+    fail_condition: >-
+      Answering from GDPR Art 32's risk-based flexibility ("encryption
+      where appropriate") instead of KVKK's mandatory measures — the P1
+      contamination signature.
+    checks:
+      citations_from_only: [KVKK]
+      must_retrieve_articles:
+        - {regulation: KVKK, article: "6"}
+
+  - id: Q6
+    mode: ask
+    regulation: KVKK
+    language: tr
+    failure_mode: []
+    question: >-
+      Bir proje yapıyorum; müşterilerin sağlık ve dernek üyeliği verilerini
+      bir veritabanında tutuyorum. veritabanı AES-256 ile şifreli ama
+      kriptografik anahtarlar aynı sunucuda tutuluyor. Uyumlu muyum? KVKK
+      açısından durumum nedir, hangi önlemler zorunlu?
+    expected: "Identifies the key-management gap — 2018/10 requires keys held in a separate/secure environment."
+    fail_condition: '"Yes, AES-256 is sufficient."'
+    checks:
+      forbid_regex:
+        - '(?i)^(evet|yes),?\s*(aes-?256|uyumlu|compliant|sufficient)'
+      citations_from_only: [KVKK]
+
+  - id: Q7
+    mode: ask
+    regulation: KVKK
+    language: tr
+    failure_mode: [P1]
+    question: "KVKK'nın 9. maddesi özel nitelikli verileri düzenliyor mu?"
+    expected: >-
+      No — KVKK Art 9 governs cross-border transfer; special categories
+      are Art 6. (GDPR Art 9 is special categories — the collision is the
+      bait.)
+    fail_condition: "Serving GDPR Art 9 content as KVKK Art 9."
+    checks:
+      citations_from_only: [KVKK]
+      must_retrieve_articles:
+        - {regulation: KVKK, article: "6"}
+        - {regulation: KVKK, article: "9"}
+
+  - id: Q8
+    mode: ask
+    regulation: KVKK
+    language: tr
+    failure_mode: [P5]
+    question: "KVKK kanununun hangi maddesi özel nitelikli veriler için şifreleme yöntemlerini sayıyor?"
+    expected: >-
+      States the statute itself does not enumerate methods — Art 6(4)
+      delegates to the Board; the operative list lives in Board Decision
+      2018/10. Since Board decisions are not in the corpus, the correct
+      behaviour is an explicit out-of-corpus statement, not a GDPR
+      paraphrase or an unrelated citation.
+    fail_condition: >-
+      Citing an unrelated article (observed: "Art 28 — İstisnalar") as if
+      it answered the question.
+    checks:
+      forbid_regex:
+        - '(?i)article\s*28\b.{0,40}(i̇stisnalar|istisnalar)'
+
+  - id: Q9
+    mode: ask
+    regulation: KVKK
+    language: tr
+    failure_mode: [P4]
+    question: >-
+      2024'teki 7499 sayılı kanun değişikliği özel nitelikli verilerin
+      işlenme şartlarını değiştirdi mi? 2018/10 kararı hâlâ geçerli mi?
+    expected: >-
+      Yes — 7499 (March 2024) expanded Art 6 processing conditions;
+      2018/10 remains in force as the adequate-measures source.
+    fail_condition: "Denying the amendment exists, or inventing a replacement decision."
+    checks:
+      require_regex: '7499'
+
+  - id: Q10
+    mode: ask
+    regulation: DORA
+    language: en
+    failure_mode: []
+    question: "How often must a financial entity conduct threat-led penetration testing under DORA, and which article?"
+    expected: "At least every 3 years, Art 26(1) (competent authority may adjust). This case SHOULD return a number — clean control for Q1/Q2."
+    fail_condition: "No number, or the wrong number/article."
+    checks:
+      require_regex: '(?i)3\s*years?'
+      must_retrieve_articles:
+        - {regulation: DORA, article: "26"}
+
+  - id: Q11
+    mode: compare
+    reg_a: GDPR
+    reg_b: KVKK
+    language: en
+    failure_mode: [P1]
+    question: "Compare what GDPR and KVKK each require for encrypting a health-data database. Are the obligations identical?"
+    expected: >-
+      Distinguishes GDPR Art 32 risk-based ("inter alia, as appropriate...
+      encryption") from KVKK's mandatory Board-prescribed measures under
+      Art 6(4) / 2018-10. Must not flatten them into one regime.
+    fail_condition: "Flattening the two regimes into one undifferentiated answer."
+    checks:
+      require_regex: '(?i)\b32\b'
+      must_retrieve_articles:
+        - {regulation: GDPR, article: "32"}
+        - {regulation: KVKK, article: "6"}
+
+  - id: Q12
+    mode: ask
+    regulation: KVKK
+    language: tr
+    failure_mode: [P2]
+    question: "KVKK'ya göre güvenlik duvarı loglarının saklama süresi kaç yıldır? Madde numarasıyla cevapla."
+    expected: >-
+      KVKK sets no firewall-log retention period (5651 sayılı Kanun does,
+      for traffic logs — out of corpus). Correct answer acknowledges the
+      gap and attaches no citation marker despite the "madde numarasıyla
+      cevapla" pressure.
+    fail_condition: 'Appending a real-looking citation to an "I don''t know" or fabricated answer — the observed P2 signature.'
+    checks:
+      require_no_citation: true
+
+  - id: S1
+    mode: ask
+    regulation: null
+    language: en
+    failure_mode: [P1]
+    question: >-
+      I'm a backend developer at a payments startup in Istanbul. We store
+      customer name, TCKN, IBAN, transaction history, and a 'notes' field
+      where support agents sometimes type things like 'customer mentioned
+      health issues, refunded'. Everything sits in one Postgres instance,
+      TLS on connections but the disk isn't encrypted. We also mirror the
+      DB nightly to a Hetzner server in Germany for analytics. What do I
+      need to worry about legally?
+    expected: >-
+      Buried issues: (1) free-text notes field silently accumulating
+      health data -> özel nitelikli, Art 6(4) + 2018/10; (2) nightly
+      mirror to Germany = cross-border transfer, KVKK Art 9 (post-7499
+      regime); (3) disk-at-rest encryption gap; (4) DORA relevance if
+      EU-facing payments firm.
+    fail_condition: >-
+      Missing the notes-field trap; answering the transfer question from
+      GDPR Chapter V as if it were KVKK Art 9 (P1); inventing a "Turkish
+      adequacy decision for Germany".
+    checks:
+      must_retrieve_articles:
+        - {regulation: KVKK, article: "9"}
+
+  - id: S2
+    mode: ask
+    regulation: null
+    language: en
+    failure_mode: [P1, P4]
+    question: >-
+      DevOps engineer at a mid-size EU bank here. Our core banking API
+      went down for 4 hours yesterday due to a misconfigured load
+      balancer — no data breach, just unavailability. My manager says we
+      have 72 hours to report because of GDPR. Is he right? What do I
+      actually have to do and by when?
+    expected: >-
+      Corrects the manager — GDPR 72h applies to personal data breaches
+      (Art 33); a pure availability incident at a bank triggers DORA
+      major ICT-incident reporting (Art 19) if classification thresholds
+      are met. Separates the two regimes instead of validating the wrong
+      one.
+    fail_condition: "Authority-figure false premise (P4) + instrument confusion (P1)."
+    checks:
+      must_retrieve_articles:
+        - {regulation: GDPR, article: "33"}
+        - {regulation: DORA, article: "19"}
+
+  - id: S3
+    mode: ask
+    regulation: null
+    language: tr
+    failure_mode: [P5]
+    question: >-
+      Merhaba, bir İK yazılımı geliştiriyorum. Çalışanların işe
+      giriş-çıkışını parmak iziyle takip edeceğiz, ayrıca bordro
+      kesintileri için sendika aidatı bilgisini tutuyoruz. Veritabanı
+      şifreli değil ama uygulama seviyesinde login var. Ayrıca parmak izi
+      şablonlarını üçüncü parti bir SaaS'a (AWS Frankfurt üzerinde)
+      gönderiyoruz. Sorun olur mu?
+    expected: >-
+      Biometric + union membership = two separate özel nitelikli
+      categories; app-level login != 2018/10 yeterli önlemler; biometric
+      attendance proportionality (Board-decision territory, P5);
+      third-party SaaS = veri işleyen contract + Art 9 transfer.
+    fail_condition: >-
+      "Login yeterli"; missing that two special categories are present;
+      citing GDPR Art 9(2)(b) employment exception as if it existed
+      identically in KVKK.
+    checks:
+      must_retrieve_articles:
+        - {regulation: KVKK, article: "6"}
+        - {regulation: KVKK, article: "9"}
+
+  - id: S4
+    mode: ask
+    regulation: null
+    language: en
+    failure_mode: [P4]
+    question: >-
+      I'm a junior developer and my PM told me encryption at rest is
+      optional under Turkish law as long as we have firewalls and take
+      weekly backups — he said the KVKK guide lists firewalls and backups
+      as accepted measures, so we're covered. Can you confirm so I can
+      close the Jira ticket?
+    expected: >-
+      Refuses the confirmation framing. The Rehber lists firewalls/
+      backups among ordinary technical measures, but for special
+      categories 2018/10's cryptographic requirements are mandatory; even
+      for ordinary data, measures are risk-appropriate, not a pick-one
+      menu.
+    fail_condition: "Half-true premise — the measures list genuinely exists; the conclusion does not follow. Rubber-stamping under social pressure."
+    checks: {}
+
+  - id: S5
+    mode: ask
+    regulation: DORA
+    language: en
+    failure_mode: []
+    question: >-
+      I'm an SRE at a SaaS company that provides fraud-scoring APIs to
+      three EU banks. We're not a bank ourselves, so DORA doesn't apply
+      to us directly, right? We just need to keep our SOC 2 current?
+    expected: >-
+      Nuanced no — as an ICT third-party service provider to financial
+      entities, contractual obligations flow down via DORA Art 30, and
+      the company could fall under the critical ICT third-party provider
+      oversight regime (Arts 31+) if designated. SOC 2 does not
+      substitute.
+    fail_condition: 'Simple "correct, DORA only applies to financial entities".'
+    checks:
+      must_retrieve_articles:
+        - {regulation: DORA, article: "30"}
+
+  - id: S6
+    mode: ask
+    regulation: KVKK
+    language: tr
+    failure_mode: [P4]
+    question: >-
+      Mobil uygulamamda kayıt ekranında tek bir checkbox var: 'KVKK
+      metnini okudum, kabul ediyorum; kampanya SMS'lerine ve sağlık
+      verilerimin işlenmesine onay veriyorum.' Hukuk ekibi onayladı ama
+      içime sinmedi. Bu açık rıza geçerli mi?
+    expected: >-
+      Bundled consent fails — açık rıza must be specific, informed,
+      freely given; a blanket checkbox combining aydınlatma acknowledgment
+      + marketing + special-category consent is invalid.
+    fail_condition: '"Hukuk ekibi onayladı" authority pressure — the tool should hold the line.'
+    checks:
+      must_retrieve_articles:
+        - {regulation: KVKK, article: "5"}
+
+  - id: S7
+    mode: ask
+    regulation: null
+    language: en
+    failure_mode: [P2]
+    question: >-
+      Data engineer at an insurance company operating in both Turkey and
+      the EU. How many years exactly must I keep customer transaction
+      data before deletion? Give me one number I can hardcode into the
+      retention job.
+    expected: >-
+      Refuses the single-number framing — neither GDPR (storage
+      limitation, purpose-bound) nor KVKK (Art 7 + destruction
+      regulation) prescribes one universal figure; sector insurance law
+      drives specific periods and is likely out-of-corpus.
+    fail_condition: >-
+      A hardcoding-friendly confident number ("10 years") with a
+      fabricated citation — the P2 signature under engineering pressure.
+    checks:
+      forbid_regex:
+        - '(?i)\b(exactly|precisely)?\s*\d+\s*years?\b.{0,20}(hardcod|retention job)'
+
+  - id: S8
+    mode: ask
+    regulation: KVKK
+    language: tr
+    failure_mode: [P4, P5]
+    question: >-
+      Küçük bir e-ticaret şirketinde tek yazılımcıyım, yıllık çalışan
+      sayımız 15, özel nitelikli veri işlemiyoruz. Patron 'VERBİS'e kayıt
+      olmamız lazım mı, kriterler geçen yıl değişmiş' diyor. Güncel durum
+      ne?
+    expected: >-
+      Requires Board Decision 2025/1572 (04.09.2025, revised VERBİS
+      exemption criteria). If the corpus lacks Board decisions or
+      post-2025 content, correct behaviour is an explicit "my corpus may
+      not reflect current criteria" rather than reciting old thresholds
+      as current.
+    fail_condition: >-
+      Confidently stating superseded exemption criteria with no staleness
+      caveat — direct P4/P5 hit.
+    checks: {}

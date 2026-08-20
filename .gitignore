@@ -1,7 +1,10 @@
 data/chroma/
 data/raw/
 data/processed/
+data/chats/
+data/eval_runs/
 __pycache__/
 *.pyc
 .pytest_cache/
 .venv/
+.streamlit/secrets.toml
