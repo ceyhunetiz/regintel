@@ -1,8 +1,9 @@
 # KVKK corpus: statute + Board decisions & guidance
 
-Status: **all four documents are now in place and indexed** (as of
-2026-08-21). This note documents what's here and where it came from, for
-anyone re-ingesting or extending the corpus later.
+Status: the four original documents are in place and indexed (as of
+2026-08-21). Two more are known-missing and identified by the v2 eval run —
+see "Still missing" below. This note documents what's here and where it came
+from, for anyone re-ingesting or extending the corpus later.
 
 ## What's indexed
 
@@ -29,6 +30,28 @@ python scripts/ingest.py            # re-ingest everything in this folder
 
 All are published by the Kişisel Verilerin Korunması Kurumu at
 **kvkk.gov.tr** (Kararlar / Mevzuat sections).
+
+## Still missing
+
+Found by the v2 eval run (`data/eval_runs/20260821-0123-v2.md`) asking about
+things genuinely outside the current corpus:
+
+- **`KVKK-KK-2019-10.txt`** (`config.DOCUMENTS` entry already added) — Kurul
+  Kararı 2019/10 (24.01.2019): personal-data-breach notification to the
+  Board and to affected individuals, including the 72-hour figure. The
+  statute itself (Art 12(5)) only says "en kısa sürede" — no hour count —
+  so without this decision the system has nothing to ground a breach-clock
+  answer in and (v2, case Q1) fabricated one instead. Same format as the
+  other Board decisions above; just needs the text.
+- **DORA's ICT-incident-reporting RTS** — Commission Delegated Regulation
+  (EU) 2024/1772, the Regulatory Technical Standard under DORA Art 20 that
+  sets the actual 4h/24h/72h/1-month reporting cascade. This is a separate
+  EU legal instrument (its own CELEX number, its own Article numbering) from
+  the base DORA regulation already indexed — save as `DORA-RTS.html` from
+  EUR-Lex, same format as `DORA.html`. Not yet wired into `config.py`: it
+  needs a small parser change first (its Article 1/2/3... would otherwise
+  collide with the base DORA regulation's own Article 1/2/3... if ingested
+  under the same regulation id) — planned once the file is in hand.
 
 ## Format
 

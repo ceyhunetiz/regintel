@@ -167,4 +167,17 @@ DOCUMENTS = {
         "url": "https://www.kvkk.gov.tr/",
         "language": "tr",
     },
+    "KVKK-KK-2019-10": {
+        "regulation": "KVKK",
+        "doc_type": "board_decision",
+        "doc_date": "2019-01-24",
+        "in_force": True,
+        "document_label": "Kurul Kararı 2019/10",
+        "full_name": ("Kişisel veri ihlallerinde Kurula ve ilgili kişilere "
+                      "bildirim yükümlülüğü (24.01.2019) — the source of the "
+                      "72-hour Board notification figure; not in KVKK's own "
+                      "statute text (which says only \"en kısa sürede\")"),
+        "url": "https://www.kvkk.gov.tr/",
+        "language": "tr",
+    },
 }
