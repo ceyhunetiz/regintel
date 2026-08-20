@@ -172,6 +172,43 @@ def test_parse_decision_text_falls_back_without_list_markers():
     assert articles[0].article_number == ""
 
 
+# Mirrors the real structure of Board Decision 2018/10: numbered top-level
+# items, some with their own lettered sub-items that RESTART at "a" under
+# every number — a bare letter alone is not a unique label in a document
+# like this.
+MOCK_NESTED_DECISION = """
+1- Ayrı bir politika belirlenmelidir.
+
+2- Çalışanlara yönelik:
+a) Düzenli eğitim verilmelidir.
+b) Gizlilik sözleşmesi yapılmalıdır.
+
+3- Elektronik ortamda:
+a) Kriptografik yöntemler kullanılmalıdır.
+b) Anahtarlar ayrı ortamda tutulmalıdır.
+c) İşlem kayıtları loglanmalıdır.
+"""
+
+
+def test_parse_decision_text_disambiguates_repeated_letters_under_numbered_groups():
+    articles = parse_decision_text(
+        MOCK_NESTED_DECISION, "MOCK-DEC", document_label="Kurul Kararı 2099/2")
+    labels = [a.article_number for a in articles]
+    assert labels == ["1", "2", "2a", "2b", "3", "3a", "3b", "3c"]
+    assert len(labels) == len(set(labels)), "repeated letters collided across numbered groups"
+
+    # The letterless top-level item's own text must survive, not be
+    # dropped as "content before the first match".
+    item1 = next(a for a in articles if a.article_number == "1")
+    assert "Ayrı bir politika" in item1.text
+
+    # Chunk ids must be unique too — a collision here means add_chunks()
+    # would silently overwrite one section's chunks with another's.
+    chunks = chunk_articles(articles)
+    ids = [c.id for c in chunks]
+    assert len(ids) == len(set(ids))
+
+
 def test_decision_chunk_citation_uses_document_label(store):
     articles = parse_decision_text(
         MOCK_DECISION, "MOCK-DEC", document_label="Kurul Kararı 2099/1")

@@ -193,12 +193,18 @@ def parse_plain_text(text: str, regulation: str, source_url: str = "",
 # Strategy 3: decision / guideline documents (no "Madde N" headings)
 # --------------------------------------------------------------------------
 
-# Kurul kararları and guidance documents structure their operative content
-# as a lettered or numbered list ("a) ...", "b) ...", "1) ...") rather than
-# statute articles. Turkish lettered lists use the Turkish alphabet order
-# (a, b, c, ç, d, e, ...), so the marker class includes ç/ğ/ı/ö/ş/ü.
-_DECISION_ITEM_RE = re.compile(
-    r"^\s*([a-zçğıöşü]|\d{1,2})[)\.]\s+", re.MULTILINE | re.IGNORECASE)
+# Kurul kararları structure their operative content as numbered top-level
+# items ("1- ...", "2- ...") each often containing its own lettered
+# sub-items ("a) ...", "b) ..."). The letters restart at "a" under every
+# numbered item (see Decision 2018/10: items 2, 3, 4 and 5 each run their
+# own a/b/c/ç/... sequence) — so a bare letter is NOT a unique label
+# within the document; it only becomes one once combined with the
+# numbered item it falls under. Turkish lettered lists use Turkish
+# alphabet order (a, b, c, ç, d, e, ...), hence the ç/ğ/ı/ö/ş/ü in the
+# marker class.
+_DECISION_NUM_RE = re.compile(r"^\s*(\d{1,2})[)\.\-–—]\s+", re.MULTILINE)
+_DECISION_LETTER_RE = re.compile(
+    r"^\s*([a-zçğıöşü])[)\.]\s+", re.MULTILINE | re.IGNORECASE)
 
 
 def parse_decision_text(text: str, regulation: str, document_label: str,
@@ -209,37 +215,49 @@ def parse_decision_text(text: str, regulation: str, document_label: str,
 
     These documents don't have "Madde N" headings — parse_plain_text's
     regexes never match — so they need their own strategy: split on the
-    lettered/numbered list markers ("a)", "b)", "1)"...) that carry the
-    actual operative measures. If fewer than 2 markers are found (e.g. a
-    short amendment-notes document with no list structure), the whole
-    text is kept as a single section rather than dropped.
+    numbered/lettered list markers that carry the actual operative
+    measures, labelling a lettered sub-item with the numbered item it
+    falls under (e.g. "3a", "3b") so repeated letters across different
+    numbered groups don't collide into the same label — and therefore
+    the same chunk id, which would otherwise silently overwrite each
+    other via add_chunks()'s upsert. If fewer than 2 markers are found
+    (e.g. a short amendment-notes document with no list structure), the
+    whole text is kept as a single section rather than dropped.
 
-    Returned Articles reuse article_number for the item label (e.g. "a")
-    so downstream chunking/retrieval code doesn't need a separate field —
-    doc_type != "statute" is what tells citation formatting to render
-    document_label ("Kurul Kararı 2018/10") instead of "Article N".
+    Returned Articles reuse article_number for the item label (e.g.
+    "3a") so downstream chunking/retrieval code doesn't need a separate
+    field — doc_type != "statute" is what tells citation formatting to
+    render document_label ("Kurul Kararı 2018/10") instead of "Article N".
     """
-    matches = list(_DECISION_ITEM_RE.finditer(text))
+    tagged = sorted(
+        [(m.start(), m.end(), m.group(1))
+         for m in _DECISION_NUM_RE.finditer(text)] +
+        [(m.start(), m.end(), m.group(1).lower())
+         for m in _DECISION_LETTER_RE.finditer(text)],
+        key=lambda t: t[0])
     common = dict(regulation=regulation, chapter="", source_url=source_url,
                  language=language, doc_type=doc_type, doc_date=doc_date,
                  in_force=in_force, document_label=document_label)
 
-    if len(matches) < 2:
+    if len(tagged) < 2:
         body = _clean(text)
         if not body:
             return []
         return [Article(article_number="", article_title="", text=body, **common)]
 
     articles: list[Article] = []
-    for i, m in enumerate(matches):
-        start = m.end()
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-        body = _clean(text[start:end])
+    current_num = ""
+    for i, (start, end, raw_label) in enumerate(tagged):
+        seg_end = tagged[i + 1][0] if i + 1 < len(tagged) else len(text)
+        body = _clean(text[end:seg_end])
+        is_numeric = raw_label.isdigit()
+        if is_numeric:
+            current_num = raw_label
+        label = raw_label if is_numeric else f"{current_num}{raw_label}"
         if not body:
             continue
-        articles.append(Article(
-            article_number=m.group(1).lower(), article_title="",
-            text=body, **common))
+        articles.append(Article(article_number=label, article_title="",
+                                text=body, **common))
     return articles
 
 
