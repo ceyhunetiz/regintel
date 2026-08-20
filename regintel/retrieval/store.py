@@ -35,12 +35,34 @@ class SearchResult:
     @property
     def citation(self) -> str:
         m = self.metadata
+        part = ""
+        if m.get("total_chunks", 1) > 1:
+            part = f" (part {m['chunk_index'] + 1} of {m['total_chunks']})"
+        if m.get("doc_type", "statute") != "statute" and m.get("document_label"):
+            item = f" ({m['article_number']})" if m.get("article_number") else ""
+            return f"{m['regulation']}, {m['document_label']}{item}{part}"
         title = f" — {m['article_title']}" if m.get("article_title") else ""
-        return f"{m['regulation']}, Article {m['article_number']}{title}"
+        return f"{m['regulation']}, Article {m['article_number']}{title}{part}"
 
 
 def _tokenize(text: str) -> list[str]:
     return re.findall(r"\w+", text.lower())
+
+
+def _where_clause(regulation: str | None, doc_type: str | list[str] | None) -> dict | None:
+    """Build a ChromaDB `where` filter from regulation + doc_type, combining
+    both with $and when both are given (Chroma rejects a flat dict with
+    more than one top-level key)."""
+    clauses = []
+    if regulation:
+        clauses.append({"regulation": regulation})
+    if doc_type:
+        types = [doc_type] if isinstance(doc_type, str) else list(doc_type)
+        clauses.append({"doc_type": {"$in": types}} if len(types) > 1
+                       else {"doc_type": types[0]})
+    if not clauses:
+        return None
+    return clauses[0] if len(clauses) == 1 else {"$and": clauses}
 
 
 @lru_cache(maxsize=1)
@@ -77,6 +99,49 @@ class RegulationStore:
         self._bm25_docs: dict[str, tuple[str, dict]] = {}
 
     # -- indexing --------------------------------------------------------
+
+    def clear_regulation(self, regulation: str) -> None:
+        """Delete all indexed chunks for one regulation.
+
+        Needed before re-ingesting after a chunking/parsing change:
+        add_chunks() upserts by id, so if a fix changes how many chunks
+        an article produces, old chunk ids that are no longer generated
+        (e.g. article-N-15..39) would otherwise stay orphaned in the
+        index alongside the corrected ones.
+        """
+        if self.collection is not None:
+            self.collection.delete(where={"regulation": regulation})
+        else:
+            self._json_docs = {k: v for k, v in self._json_docs.items()
+                               if v[1].get("regulation") != regulation}
+            self._docs_path.write_text(json.dumps(
+                {k: {"text": t, "metadata": m}
+                 for k, (t, m) in self._json_docs.items()},
+                ensure_ascii=False), encoding="utf-8")
+        self._bm25 = None
+
+    def clear_document(self, regulation: str, document_label: str) -> None:
+        """Delete all indexed chunks for one non-statute document (a Board
+        decision or guideline), without touching the statute or any other
+        document indexed under the same regulation.
+
+        clear_regulation() is too broad for this: a KVKK Board decision
+        shares regulation="KVKK" with the KVKK statute, so re-ingesting the
+        decision with clear_regulation() would silently wipe the statute
+        out of the index too.
+        """
+        if self.collection is not None:
+            self.collection.delete(where={"$and": [
+                {"regulation": regulation}, {"document_label": document_label}]})
+        else:
+            self._json_docs = {k: v for k, v in self._json_docs.items()
+                               if not (v[1].get("regulation") == regulation and
+                                       v[1].get("document_label") == document_label)}
+            self._docs_path.write_text(json.dumps(
+                {k: {"text": t, "metadata": m}
+                 for k, (t, m) in self._json_docs.items()},
+                ensure_ascii=False), encoding="utf-8")
+        self._bm25 = None
 
     def add_chunks(self, chunks: list[Chunk], batch_size: int = 64) -> None:
         if self.collection is not None:
@@ -116,12 +181,19 @@ class RegulationStore:
     # -- search ------------------------------------------------------------
 
     def search(self, query: str, top_k: int = config.DEFAULT_TOP_K,
-               regulation: str | None = None) -> list[SearchResult]:
-        """Hybrid search with optional regulation filter."""
-        where = {"regulation": regulation} if regulation else None
+               regulation: str | None = None,
+               doc_type: str | list[str] | None = None) -> list[SearchResult]:
+        """Hybrid search with optional regulation and doc_type filters.
+
+        doc_type restricts to "statute" | "board_decision" | "guideline"
+        (or a list of those) — e.g. a comparison-mode caller that only
+        wants statute text, or a follow-up that specifically wants Board
+        decisions once the corpus has them.
+        """
+        where = _where_clause(regulation, doc_type)
         semantic = self._semantic_search(query, top_k * 3, where) \
             if self.use_embeddings else []
-        keyword = self._bm25_search(query, top_k * 3, regulation)
+        keyword = self._bm25_search(query, top_k * 3, regulation, doc_type)
         fused = _rrf([semantic, keyword]) if semantic else keyword
         return fused[:top_k]
 
@@ -132,18 +204,23 @@ class RegulationStore:
             SearchResult(id=i, text=d, metadata=m, score=1 - dist)
             for i, d, m, dist in zip(res["ids"][0], res["documents"][0],
                                      res["metadatas"][0], res["distances"][0])
+            if 1 - dist >= config.MIN_SEMANTIC_SCORE
         ]
 
-    def _bm25_search(self, query, n, regulation) -> list[SearchResult]:
+    def _bm25_search(self, query, n, regulation, doc_type=None) -> list[SearchResult]:
         self._ensure_bm25()
         if self._bm25 is None:
             return []
+        allowed_types = {doc_type} if isinstance(doc_type, str) else \
+            set(doc_type) if doc_type else None
         scores = self._bm25.get_scores(_tokenize(query))
         ranked = sorted(zip(self._bm25_ids, scores), key=lambda x: -x[1])
         out = []
         for id_, score in ranked:
             doc, meta = self._bm25_docs[id_]
             if regulation and meta.get("regulation") != regulation:
+                continue
+            if allowed_types and meta.get("doc_type", "statute") not in allowed_types:
                 continue
             if score <= 0:
                 break
@@ -154,6 +231,26 @@ class RegulationStore:
 
     def regulations(self) -> list[str]:
         return sorted({m["regulation"] for _, m in self._all_docs().values()})
+
+    def doc_types(self, regulation: str) -> set[str]:
+        """Which doc_types are actually indexed for a regulation — lets the
+        answer prompt state corpus scope truthfully (e.g. "statute only,
+        no Board decisions indexed") instead of the model guessing."""
+        return {m.get("doc_type", "statute") for _, m in self._all_docs().values()
+               if m.get("regulation") == regulation}
+
+    def article_range(self, regulation: str) -> tuple[int, int] | None:
+        """Min/max indexed article number for a regulation, or None if
+        nothing's indexed. Retrieval only ever hands the model snippets,
+        not corpus-wide facts — this lets the answer prompt state the
+        instrument's real article range explicitly, so the model can
+        correctly resolve "does Article N exist" questions instead of
+        having no basis to say anything but "not in the retrieved
+        sources" either way.
+        """
+        nums = [int(m["article_number"]) for _, (_, m) in self._all_docs().items()
+               if m["regulation"] == regulation and m["article_number"].isdigit()]
+        return (min(nums), max(nums)) if nums else None
 
 
 def _rrf(result_lists: list[list[SearchResult]],

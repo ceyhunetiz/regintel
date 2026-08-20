@@ -3,6 +3,8 @@ answer with the sources that back it."""
 
 from __future__ import annotations
 
+import re
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 
 from regintel import config
@@ -10,19 +12,145 @@ from regintel.generation import prompts
 from regintel.generation.llm import LLM, EchoLLM, get_llm
 from regintel.retrieval.store import RegulationStore, SearchResult
 
+_CITATION_RE = re.compile(r"\[(\d+)\]")
+
+# Matches any configured regulation acronym as a whole word (case-insensitive).
+_REG_NAME_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(r) for r in config.REGULATIONS) + r")\b",
+    re.IGNORECASE)
+_DANGLING_PREP_RE = re.compile(
+    r"\b(under|per|pursuant to|according to)\s*[.,]?\s*$", re.IGNORECASE)
+_ARTICLE_MENTION_RE = re.compile(r"\b(?:article|art\.?|madde)\s+(\d+)\b", re.IGNORECASE)
+
+
+def _strip_regulation_names(query: str) -> str:
+    """Remove regulation acronyms (DORA, GDPR, KVKK...) from a retrieval
+    query.
+
+    The rewrite prompt already asks the model not to include them, but
+    that's not guaranteed — and when it does, the acronym measurably
+    drags cross-lingual semantic search toward generic front-matter
+    articles ("what is this law") instead of the actual topic, since
+    retrieval already filters by regulation separately. Belt-and-braces:
+    strip mechanically regardless of prompt compliance.
+    """
+    stripped = _REG_NAME_RE.sub("", query)
+    stripped = _DANGLING_PREP_RE.sub("", stripped)
+    stripped = re.sub(r"\s{2,}", " ", stripped).strip(" .,")
+    return stripped or query  # never return an empty query
+
+
+def _detect_single_regulation(question: str) -> str | None:
+    """If the question unambiguously names exactly one known regulation,
+    return it; otherwise None.
+
+    Used to auto-filter retrieval even when the caller didn't pass an
+    explicit `regulation=` (e.g. UI "All" mode). Unfiltered retrieval
+    systematically lets same-language instruments (GDPR/DORA, both
+    English) outrank a genuinely relevant chunk from a different-
+    language instrument (KVKK) for English questions — see the P0
+    investigation. When the question names more than one regulation
+    (e.g. a deliberate cross-instrument comparison), this returns None
+    and retrieval stays unfiltered, since forcing a single instrument
+    there would be wrong.
+    """
+    found = {m.upper() for m in _REG_NAME_RE.findall(question)}
+    return found.pop() if len(found) == 1 else None
+
+
+def cited_sources(answer: str, results: list[SearchResult]
+                  ) -> tuple[str, list[int], list[SearchResult]]:
+    """Sources the answer actually cited via [n] markers, not the raw
+    retrieval set — plus the answer text with any dangling markers
+    stripped.
+
+    Retrieval always returns top_k results whether or not they're
+    relevant; without this, a refusal ("sources don't cover this") would
+    still display every retrieved chunk as if it backed the answer. Only
+    markers the model actually wrote, that resolve to a real source, are
+    kept — a refusal with no [n] markers correctly comes back empty. A
+    marker citing a source number that doesn't exist (e.g. [6] against
+    3 sources — the model hallucinating a citation) is stripped from the
+    answer text entirely rather than left dangling: an unresolved marker
+    reads as per-claim attribution to a reader and is worse than no
+    marker at all. Indices are the original 1-based marker numbers
+    (matching format_sources' numbering), not a fresh 1..k, so a
+    displayed "[3]" always matches the "[3]" left in the answer text.
+    """
+    valid_max = len(results)
+
+    def _strip_invalid(m: re.Match) -> str:
+        n = int(m.group(1))
+        return m.group(0) if 1 <= n <= valid_max else ""
+
+    clean_answer = _CITATION_RE.sub(_strip_invalid, answer)
+    # Tidy up connective words/punctuation left dangling by a removed
+    # marker, e.g. "...by [3] and [6]." -> "...by [3] and ." -> "...[3]."
+    clean_answer = re.sub(r"\s+and\s*([.,;:]|$)", r"\1", clean_answer)
+    clean_answer = re.sub(r",\s*([.,;:])", r"\1", clean_answer)
+    clean_answer = re.sub(r" {2,}", " ", clean_answer)
+    clean_answer = re.sub(r" ([.,;:])", r"\1", clean_answer)
+
+    cited = {int(m) for m in _CITATION_RE.findall(clean_answer)}
+    pairs = [(i, r) for i, r in enumerate(results, 1) if i in cited]
+    return clean_answer, [i for i, _ in pairs], [r for _, r in pairs]
+
+
+def group_sources(indices: list[int], results: list[SearchResult]) -> list[dict]:
+    """Group cited sources by article for display.
+
+    A long article split into several chunks (e.g. 5 of the 7 parts of
+    DORA Art 19 all cited) should render as one line listing every part,
+    not 5 separate lines that look like near-duplicates of each other.
+    """
+    groups: dict[tuple, dict] = {}
+    order: list[tuple] = []
+    for idx, r in zip(indices, results):
+        m = r.metadata
+        key = (m["regulation"], m["article_number"])
+        if key not in groups:
+            if m.get("doc_type", "statute") != "statute" and m.get("document_label"):
+                item = f" ({m['article_number']})" if m.get("article_number") else ""
+                base_citation = f"{m['regulation']}, {m['document_label']}{item}"
+            else:
+                title = f" — {m['article_title']}" if m.get("article_title") else ""
+                base_citation = f"{m['regulation']}, Article {m['article_number']}{title}"
+            groups[key] = {
+                "indices": [], "parts": [], "total": m.get("total_chunks", 1),
+                "texts": [], "base_citation": base_citation,
+            }
+            order.append(key)
+        g = groups[key]
+        g["indices"].append(idx)
+        g["texts"].append(r.text)
+        if g["total"] > 1:
+            g["parts"].append(m["chunk_index"] + 1)
+
+    out = []
+    for key in order:
+        g = groups[key]
+        citation = g["base_citation"]
+        if g["parts"]:
+            parts = ", ".join(str(p) for p in sorted(g["parts"]))
+            citation += f" (parts {parts} of {g['total']})"
+        out.append({"indices": g["indices"], "citation": citation,
+                    "text": "\n\n---\n\n".join(g["texts"])})
+    return out
+
 
 @dataclass
 class RagResponse:
     answer: str
     sources: list[SearchResult] = field(default_factory=list)
+    cited_indices: list[int] = field(default_factory=list)  # parallel to sources
 
     def to_dict(self) -> dict:
         return {
             "answer": self.answer,
             "sources": [
-                {"citation": s.citation, "text": s.text,
+                {"index": idx, "citation": s.citation, "text": s.text,
                  "metadata": s.metadata, "score": s.score}
-                for s in self.sources
+                for idx, s in zip(self.cited_indices, self.sources)
             ],
         }
 
@@ -44,25 +172,112 @@ class RagPipeline:
             return question
         try:
             q = self.llm.chat(prompts.QUERY_REWRITE_PROMPT, question).strip()
-            return q[:300] if q else question
+            q = q[:300] if q else question
         except Exception:
             return question
+        return _strip_regulation_names(q)
+
+    def _ask_prompt(self, question: str, regulation: str | None,
+                     top_k: int) -> tuple[list[SearchResult], str]:
+        # Auto-filter to a single named instrument even if the caller
+        # left `regulation` unset (e.g. UI "All" mode) — see
+        # _detect_single_regulation's docstring for why this matters.
+        if regulation is None:
+            regulation = _detect_single_regulation(question)
+        query = self._retrieval_query(question)
+        results = self.store.search(query, top_k=top_k, regulation=regulation)
+        prompt = prompts.ANSWER_TEMPLATE.format(
+            scope_note=self._scope_note(regulation),
+            sources=prompts.format_sources(results), question=question)
+        return results, prompt
+
+    def _scope_note(self, regulation: str | None) -> str:
+        """Corpus scope line for a single-instrument question — lets the
+        model correctly resolve "does article N exist" without having to
+        guess, since retrieval only ever hands it snippets, not corpus-
+        wide facts. Empty when no single regulation is targeted (e.g.
+        "All" mode, or a genuine cross-instrument question).
+        """
+        if not regulation:
+            return ""
+        r = self.store.article_range(regulation)
+        if not r:
+            return ""
+        lo, hi = r
+        return (f"Corpus scope: {regulation} in this corpus is indexed from "
+                f"Article {lo} to Article {hi}.\n\n")
+
+    def _out_of_range_article(self, question: str, regulation: str | None
+                              ) -> str | None:
+        """If the question names one regulation and one explicit article
+        number, and that number is outside the corpus's confirmed
+        indexed range, return a deterministic "does not exist" answer —
+        else None.
+
+        The prompt already tells the model this (see _scope_note) and
+        instructs it to act on it (SYSTEM_PROMPT rule 11), but a local
+        8B model doesn't reliably apply a numeric range-check from
+        instructions alone — verified empirically (it kept saying
+        "sources don't cover this" for KVKK Art 47 / DORA Art 72 even
+        with the range stated right above the sources). Denying a real
+        provision is exactly as damaging as inventing one, so for this
+        narrow, structurally-detectable case, check deterministically
+        instead of trusting the model's reasoning: it can only fire when
+        the number is confirmed OUTSIDE the indexed range, so it can
+        never falsely deny a real article.
+
+        This bypasses the LLM entirely (SYSTEM_PROMPT rule 6, "answer in
+        the language the question was asked in", never applies), so the
+        message picks its own language from which word the question
+        used to name the article — "madde" for Turkish, "article"/"art."
+        for English.
+        """
+        reg = regulation or _detect_single_regulation(question)
+        if not reg:
+            return None
+        m = _ARTICLE_MENTION_RE.search(question)
+        if not m:
+            return None
+        n = int(m.group(1))
+        r = self.store.article_range(reg)
+        if r and not (r[0] <= n <= r[1]):
+            if m.group(0).lower().startswith("madde"):
+                return (f"{reg} Madde {n} mevcut değil — bu külliyatta {reg} "
+                        f"Madde {r[0]} ile Madde {r[1]} arasında indekslenmiştir.")
+            return (f"{reg} Article {n} does not exist — {reg} in this corpus "
+                    f"is indexed from Article {r[0]} to Article {r[1]}.")
+        return None
 
     def ask(self, question: str, regulation: str | None = None,
             top_k: int = config.DEFAULT_TOP_K) -> RagResponse:
         """Answer a question, optionally restricted to one regulation."""
-        query = self._retrieval_query(question)
-        results = self.store.search(query, top_k=top_k, regulation=regulation)
-        prompt = prompts.ANSWER_TEMPLATE.format(
-            sources=prompts.format_sources(results), question=question)
+        oor = self._out_of_range_article(question, regulation)
+        if oor:
+            return RagResponse(answer=oor)
+        results, prompt = self._ask_prompt(question, regulation, top_k)
         answer = self.llm.chat(prompts.SYSTEM_PROMPT, prompt)
-        return RagResponse(answer=answer, sources=results)
+        answer, indices, sources = cited_sources(answer, results)
+        return RagResponse(answer=answer, sources=sources, cited_indices=indices)
 
-    def compare(self, question: str, reg_a: str, reg_b: str,
-                top_k_each: int = 4) -> RagResponse:
-        """Compare two regulations on a topic.
+    def ask_stream(self, question: str, regulation: str | None = None,
+                    top_k: int = config.DEFAULT_TOP_K
+                    ) -> tuple[list[SearchResult], Iterator[str]]:
+        """Like ask(), but returns the raw retrieved sources plus a token
+        generator for the answer so the caller can render it as it's
+        produced. The answer text isn't known until the stream is
+        consumed, so callers must apply cited_sources(answer, results)
+        themselves afterward to get the cleaned answer text and the
+        citation-grounded source list — these raw `results` are the
+        full retrieval set, not yet filtered."""
+        oor = self._out_of_range_article(question, regulation)
+        if oor:
+            return [], iter([oor])
+        results, prompt = self._ask_prompt(question, regulation, top_k)
+        return results, self.llm.stream_chat(prompts.SYSTEM_PROMPT, prompt)
 
-        Retrieval runs separately per regulation (metadata-filtered) so
+    def _compare_prompt(self, question: str, reg_a: str, reg_b: str,
+                         top_k_each: int) -> tuple[list[SearchResult], str]:
+        """Retrieval runs separately per regulation (metadata-filtered) so
         both sides are actually represented in the context — a single
         unfiltered search often returns chunks from only one framework.
         """
@@ -75,5 +290,20 @@ class RagPipeline:
             sources_b=prompts.format_sources(results_b, start=len(results_a) + 1),
             question=question,
         )
+        return results_a + results_b, prompt
+
+    def compare(self, question: str, reg_a: str, reg_b: str,
+                top_k_each: int = 4) -> RagResponse:
+        """Compare two regulations on a topic."""
+        results, prompt = self._compare_prompt(question, reg_a, reg_b, top_k_each)
         answer = self.llm.chat(prompts.SYSTEM_PROMPT, prompt)
-        return RagResponse(answer=answer, sources=results_a + results_b)
+        answer, indices, sources = cited_sources(answer, results)
+        return RagResponse(answer=answer, sources=sources, cited_indices=indices)
+
+    def compare_stream(self, question: str, reg_a: str, reg_b: str,
+                        top_k_each: int = 4
+                        ) -> tuple[list[SearchResult], Iterator[str]]:
+        """Like compare(), but returns the raw sources plus a token
+        generator — see ask_stream()'s note on applying cited_sources()."""
+        results, prompt = self._compare_prompt(question, reg_a, reg_b, top_k_each)
+        return results, self.llm.stream_chat(prompts.SYSTEM_PROMPT, prompt)

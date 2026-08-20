@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
 
-from regintel.ingestion.parser import parse_plain_text, parse_eurlex_html
+from regintel.ingestion.parser import parse_plain_text, parse_eurlex_html, parse_decision_text
 from regintel.ingestion.chunker import chunk_articles
 from regintel.retrieval.store import RegulationStore
 from regintel.generation.rag import RagPipeline
@@ -121,3 +121,82 @@ def test_ask_returns_sources(store):
     resp = pipe.ask("What must be in the third-party register?")
     assert resp.sources
     assert resp.answer  # EchoLLM returns context, never empty
+
+
+# --- Board decision / guideline documents (not "Article N") ----------------
+# NOT real regulation text — a synthetic stand-in for e.g. KVKK Kurul
+# Kararı 2018/10, whose operative content is a lettered list rather than
+# statute articles.
+MOCK_DECISION = """
+a) Özel nitelikli kişisel veriler mümkün olduğunca azaltılmalı ve
+şifrelenmelidir.
+b) Kriptografik anahtarlar, verinin bulunduğu ortamdan ayrı bir güvenli
+ortamda saklanmalıdır.
+c) Erişim yetkileri düzenli aralıklarla gözden geçirilmelidir.
+"""
+
+
+def test_parse_decision_text_extracts_items():
+    articles = parse_decision_text(
+        MOCK_DECISION, "MOCK-DEC", document_label="Kurul Kararı 2099/1",
+        doc_date="2099-01-01")
+    assert len(articles) == 3
+    assert [a.article_number for a in articles] == ["a", "b", "c"]
+    assert all(a.doc_type == "board_decision" for a in articles)
+    assert all(a.document_label == "Kurul Kararı 2099/1" for a in articles)
+    assert "ayrı bir güvenli" in articles[1].text
+
+
+def test_parse_decision_text_falls_back_without_list_markers():
+    articles = parse_decision_text(
+        "Bu değişiklik 6. maddeyi etkilemiştir, ek koşul getirilmemiştir.",
+        "MOCK-DEC", document_label="Değişiklik Notu")
+    assert len(articles) == 1
+    assert articles[0].article_number == ""
+
+
+def test_decision_chunk_citation_uses_document_label(store):
+    articles = parse_decision_text(
+        MOCK_DECISION, "MOCK-DEC", document_label="Kurul Kararı 2099/1")
+    store.add_chunks(chunk_articles(articles))
+    results = store.search("kriptografik anahtar güvenli ortam",
+                           top_k=3, regulation="MOCK-DEC")
+    assert results
+    assert "Kurul Kararı 2099/1" in results[0].citation
+    assert "Article" not in results[0].citation
+    assert results[0].metadata["doc_type"] == "board_decision"
+
+
+def test_clear_document_does_not_touch_sibling_statute():
+    """clear_document() must only remove the named document's chunks —
+    not the whole regulation, which would silently wipe out statute
+    articles sharing the same regulation id (e.g. KVKK statute + KVKK
+    Kurul Kararı 2018/10)."""
+    tmp = tempfile.mkdtemp()
+    s = RegulationStore(persist_dir=tmp, use_embeddings=False)
+
+    statute_articles = parse_plain_text(MOCK_REG_A, "MOCK-A")
+    s.add_chunks(chunk_articles(statute_articles))
+
+    decision_articles = parse_decision_text(
+        MOCK_DECISION, "MOCK-A", document_label="Kurul Kararı 2099/1")
+    s.add_chunks(chunk_articles(decision_articles))
+
+    s.clear_document("MOCK-A", "Kurul Kararı 2099/1")
+
+    remaining = s._all_docs()
+    labels = {m.get("document_label") for _, m in remaining.values()}
+    assert "Kurul Kararı 2099/1" not in labels
+    assert any(m["regulation"] == "MOCK-A" and m.get("article_number") == "1"
+              for _, m in remaining.values()), "statute chunks were wiped too"
+
+
+def test_doc_types_reports_indexed_types():
+    tmp = tempfile.mkdtemp()
+    s = RegulationStore(persist_dir=tmp, use_embeddings=False)
+    s.add_chunks(chunk_articles(parse_plain_text(MOCK_REG_A, "MOCK-A")))
+    assert s.doc_types("MOCK-A") == {"statute"}
+
+    s.add_chunks(chunk_articles(parse_decision_text(
+        MOCK_DECISION, "MOCK-A", document_label="Kurul Kararı 2099/1")))
+    assert s.doc_types("MOCK-A") == {"statute", "board_decision"}

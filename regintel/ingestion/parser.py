@@ -22,12 +22,22 @@ from bs4 import BeautifulSoup
 @dataclass
 class Article:
     regulation: str          # e.g. "DORA"
-    article_number: str      # e.g. "17"
+    article_number: str      # e.g. "17" (statute) or item label, e.g. "a" (decision)
     article_title: str       # e.g. "ICT-related incident management process"
     chapter: str             # e.g. "Chapter III"
     text: str
     source_url: str = ""
     language: str = "en"
+    # doc_type distinguishes statute text from Board (Kurul) decisions and
+    # guidance documents, whose operative content isn't "Article N" — see
+    # parse_decision_text(). doc_date/in_force let the pipeline state
+    # temporal facts ("2018/10 remains in force") instead of guessing.
+    doc_type: str = "statute"          # "statute" | "board_decision" | "guideline"
+    doc_date: str = ""                 # ISO date, e.g. "2018-01-31"
+    in_force: bool = True
+    document_label: str = ""           # e.g. "Kurul Kararı 2018/10" — used for
+                                        # citations instead of "Article N" when
+                                        # doc_type != "statute"
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -49,7 +59,20 @@ def parse_eurlex_html(html: str, regulation: str, source_url: str = "",
 
     # Walk all paragraphs in document order, tracking chapter headings
     # and cutting a new Article at each article heading.
-    elements = soup.find_all(["p", "div", "table"])
+    #
+    # Deliberately excludes "div": EUR-Lex wraps every article (and every
+    # chapter/section) in a structural <div class="eli-subdivision">.
+    # find_all() matches those wrapper divs too, at every nesting depth,
+    # and visits each one *before* the <p class="oj-ti-art"> heading
+    # nested inside it. A bare wrapper div carries none of the heading
+    # classes below, so it used to fall into the plain-text branch and
+    # its .get_text() would flatten the *entire* subtree — including the
+    # next article's heading and full body — onto whatever article was
+    # still open. The nested heading was then found moments later and
+    # correctly started a new Article, so article counts came out right
+    # (masking the bug) while large spans of text were duplicated onto
+    # the wrong, preceding article.
+    elements = soup.find_all(["p", "table"])
     current: Article | None = None
     buffer: list[str] = []
 
@@ -143,6 +166,17 @@ def parse_plain_text(text: str, regulation: str, source_url: str = "",
         title = first if is_title else ""
         rest = lines[1].strip() if title and len(lines) > 1 else body
 
+        # mevzuat.gov.tr style: the heading sits on the line *before*
+        # "MADDE N-" (e.g. "İlgili kişinin hakları\nMADDE 11- (1) ...").
+        # That heading is the strongest retrieval signal, so recover it
+        # from the text preceding the match when the body has no title.
+        if not title:
+            preceding = text[:m.start()].rstrip().split("\n")
+            if preceding:
+                cand = preceding[-1].strip()
+                if 0 < len(cand) < 120 and not cand.startswith("("):
+                    title = cand
+
         articles.append(Article(
             regulation=regulation,
             article_number=m.group(1),
@@ -152,6 +186,60 @@ def parse_plain_text(text: str, regulation: str, source_url: str = "",
             source_url=source_url,
             language=language,
         ))
+    return articles
+
+
+# --------------------------------------------------------------------------
+# Strategy 3: decision / guideline documents (no "Madde N" headings)
+# --------------------------------------------------------------------------
+
+# Kurul kararları and guidance documents structure their operative content
+# as a lettered or numbered list ("a) ...", "b) ...", "1) ...") rather than
+# statute articles. Turkish lettered lists use the Turkish alphabet order
+# (a, b, c, ç, d, e, ...), so the marker class includes ç/ğ/ı/ö/ş/ü.
+_DECISION_ITEM_RE = re.compile(
+    r"^\s*([a-zçğıöşü]|\d{1,2})[)\.]\s+", re.MULTILINE | re.IGNORECASE)
+
+
+def parse_decision_text(text: str, regulation: str, document_label: str,
+                        doc_type: str = "board_decision", doc_date: str = "",
+                        in_force: bool = True, source_url: str = "",
+                        language: str = "tr") -> list[Article]:
+    """Split a Board decision or guideline into indexable sections.
+
+    These documents don't have "Madde N" headings — parse_plain_text's
+    regexes never match — so they need their own strategy: split on the
+    lettered/numbered list markers ("a)", "b)", "1)"...) that carry the
+    actual operative measures. If fewer than 2 markers are found (e.g. a
+    short amendment-notes document with no list structure), the whole
+    text is kept as a single section rather than dropped.
+
+    Returned Articles reuse article_number for the item label (e.g. "a")
+    so downstream chunking/retrieval code doesn't need a separate field —
+    doc_type != "statute" is what tells citation formatting to render
+    document_label ("Kurul Kararı 2018/10") instead of "Article N".
+    """
+    matches = list(_DECISION_ITEM_RE.finditer(text))
+    common = dict(regulation=regulation, chapter="", source_url=source_url,
+                 language=language, doc_type=doc_type, doc_date=doc_date,
+                 in_force=in_force, document_label=document_label)
+
+    if len(matches) < 2:
+        body = _clean(text)
+        if not body:
+            return []
+        return [Article(article_number="", article_title="", text=body, **common)]
+
+    articles: list[Article] = []
+    for i, m in enumerate(matches):
+        start = m.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        body = _clean(text[start:end])
+        if not body:
+            continue
+        articles.append(Article(
+            article_number=m.group(1).lower(), article_title="",
+            text=body, **common))
     return articles
 
 

@@ -22,6 +22,14 @@ CHUNK_OVERLAP_CHARS = 150
 COLLECTION_NAME = "regulations"
 DEFAULT_TOP_K = 6
 RRF_K = 60  # reciprocal rank fusion constant
+# Cosine-similarity floor for semantic search (score = 1 - distance).
+# Calibrated against the multilingual MiniLM embedding model: genuinely
+# on-topic in-corpus queries score ~0.6-0.8; totally unrelated queries
+# score ~0.0-0.1. This only screens out that clearly-irrelevant tail —
+# same-domain-but-wrong-regulation confusions can still score 0.4-0.6,
+# so this is a coarse floor, not the primary relevance mechanism (see
+# citation grounding in rag.py, which checks what the answer actually cites).
+MIN_SEMANTIC_SCORE = 0.15
 
 # --- LLM -------------------------------------------------------------------
 # "ollama" = local model (default, fully offline)
@@ -34,7 +42,17 @@ API_MODEL = "gpt-4o-mini"
 
 OLLAMA_BASE_URL = "http://localhost:11434"
 OLLAMA_MODEL = "qwen3:8b"  # good multilingual (EN + TR) model
-LLM_TEMPERATURE = 0.1  # low temperature: we want grounded, not creative
+# Greedy decoding + a fixed seed: an audit-facing tool needs a reviewer
+# re-running a query to get the answer that's in the working paper, not
+# a materially different one. This applies to both the query-rewrite
+# call and the answer-generation call (both go through the same
+# LLM.chat/stream_chat), since rewrite non-determinism also changes
+# which chunks get retrieved. Doesn't guarantee bit-for-bit reproduction
+# on every backend (floating-point non-associativity in some GPU/batched
+# runtimes can still cause rare drift), but removes sampling as a source
+# of variance, which was the dominant one observed.
+LLM_TEMPERATURE = 0.0
+LLM_SEED = 42
 LLM_MAX_TOKENS = 2500
 
 # --- Known regulations -----------------------------------------------------
@@ -68,4 +86,58 @@ REGULATIONS = {
         "language": "tr",
     },
     # Add more the same way, e.g. NIS2: {"celex": "32022L2555", ...}
+}
+
+# --- Board decisions & guidance (non-statute documents) ---------------------
+# The KVKK statute text alone is not the full picture: the *operative*
+# measures for several obligations (e.g. what "adequate security measures"
+# means for special-category data) live in Kurul (Board) decisions and
+# official guidance, not the law itself. These are NOT ingested by default
+# — see data/raw/README.md for exactly which documents to obtain and from
+# where (kvkk.gov.tr). Each entry here is a placeholder: ingestion looks
+# for data/raw/<id>.txt and, once you've dropped the real text in, parses
+# it with parse_decision_text() instead of the statute path.
+DOCUMENTS = {
+    "KVKK-KK-2018-10": {
+        "regulation": "KVKK",
+        "doc_type": "board_decision",
+        "doc_date": "2018-01-31",
+        "in_force": True,
+        "document_label": "Kurul Kararı 2018/10",
+        "full_name": ("Özel nitelikli kişisel veriler için alınması gereken "
+                      "yeterli önlemler (31.01.2018, RG 07.03.2018 No. 30353)"),
+        "url": "https://www.kvkk.gov.tr/",
+        "language": "tr",
+    },
+    "KVKK-REHBER-VERI-GUVENLIGI": {
+        "regulation": "KVKK",
+        "doc_type": "guideline",
+        "doc_date": "",
+        "in_force": True,
+        "document_label": "Kişisel Veri Güvenliği Rehberi",
+        "full_name": "Kişisel Veri Güvenliği Rehberi (teknik ve idari tedbirler)",
+        "url": "https://www.kvkk.gov.tr/",
+        "language": "tr",
+    },
+    "KVKK-KK-2025-1572": {
+        "regulation": "KVKK",
+        "doc_type": "board_decision",
+        "doc_date": "2025-09-04",
+        "in_force": True,
+        "document_label": "Kurul Kararı 2025/1572",
+        "full_name": "VERBİS kayıt istisna kriterlerinin güncellenmesi (04.09.2025)",
+        "url": "https://www.kvkk.gov.tr/",
+        "language": "tr",
+    },
+    "KVKK-7499-AMENDMENT-NOTES": {
+        "regulation": "KVKK",
+        "doc_type": "guideline",
+        "doc_date": "2024-03-02",
+        "in_force": True,
+        "document_label": "7499 Sayılı Kanun Değişiklik Notları",
+        "full_name": ("7499 sayılı Kanun ile KVKK Madde 6 ve Madde 9 üzerinde "
+                      "yapılan değişikliklerin özeti"),
+        "url": "https://www.mevzuat.gov.tr/",
+        "language": "tr",
+    },
 }
