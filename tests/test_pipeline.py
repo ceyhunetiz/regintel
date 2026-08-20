@@ -191,6 +191,22 @@ def test_clear_document_does_not_touch_sibling_statute():
               for _, m in remaining.values()), "statute chunks were wiped too"
 
 
+def test_scope_note_flags_missing_document_types():
+    tmp = tempfile.mkdtemp()
+    s = RegulationStore(persist_dir=tmp, use_embeddings=False)
+    s.add_chunks(chunk_articles(parse_plain_text(MOCK_REG_A, "MOCK-A")))
+    pipe = RagPipeline(store=s, llm=EchoLLM())
+
+    statute_only_note = pipe._scope_note("MOCK-A")
+    assert "no Board" in statute_only_note
+
+    s.add_chunks(chunk_articles(parse_decision_text(
+        MOCK_DECISION, "MOCK-A", document_label="Kurul Kararı 2099/1")))
+    combined_note = pipe._scope_note("MOCK-A")
+    assert "no Board" not in combined_note
+    assert "board decision" in combined_note
+
+
 def test_doc_types_reports_indexed_types():
     tmp = tempfile.mkdtemp()
     s = RegulationStore(persist_dir=tmp, use_embeddings=False)

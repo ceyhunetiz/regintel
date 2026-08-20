@@ -194,18 +194,33 @@ class RagPipeline:
     def _scope_note(self, regulation: str | None) -> str:
         """Corpus scope line for a single-instrument question — lets the
         model correctly resolve "does article N exist" without having to
-        guess, since retrieval only ever hands it snippets, not corpus-
-        wide facts. Empty when no single regulation is targeted (e.g.
-        "All" mode, or a genuine cross-instrument question).
+        guess (retrieval only ever hands it snippets, not corpus-wide
+        facts), and states which document types are actually indexed so
+        it can give the out-of-corpus answer (SYSTEM_PROMPT rule 12)
+        instead of paraphrasing statute text for a question that's really
+        about a Board decision. Empty when no single regulation is
+        targeted (e.g. "All" mode, or a genuine cross-instrument question).
         """
         if not regulation:
             return ""
         r = self.store.article_range(regulation)
-        if not r:
+        types = self.store.doc_types(regulation)
+        if not r and not types:
             return ""
-        lo, hi = r
-        return (f"Corpus scope: {regulation} in this corpus is indexed from "
-                f"Article {lo} to Article {hi}.\n\n")
+
+        parts = []
+        if r:
+            lo, hi = r
+            parts.append(f"{regulation} statute is indexed from Article "
+                        f"{lo} to Article {hi}")
+        non_statute = types - {"statute"}
+        if non_statute:
+            labels = ", ".join(sorted(t.replace("_", " ") for t in non_statute))
+            parts.append(f"also indexed for {regulation}: {labels}")
+        else:
+            parts.append(f"no Board (Kurul) decisions or guidance documents "
+                        f"are indexed for {regulation} — statute text only")
+        return "Corpus scope: " + "; ".join(parts) + ".\n\n"
 
     def _out_of_range_article(self, question: str, regulation: str | None
                               ) -> str | None:
@@ -285,6 +300,7 @@ class RagPipeline:
         results_a = self.store.search(query, top_k=top_k_each, regulation=reg_a)
         results_b = self.store.search(query, top_k=top_k_each, regulation=reg_b)
         prompt = prompts.COMPARE_TEMPLATE.format(
+            scope_note=self._scope_note(reg_a) + self._scope_note(reg_b),
             reg_a=reg_a, reg_b=reg_b,
             sources_a=prompts.format_sources(results_a),
             sources_b=prompts.format_sources(results_b, start=len(results_a) + 1),
