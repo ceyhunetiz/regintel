@@ -30,6 +30,19 @@ RRF_K = 60  # reciprocal rank fusion constant
 # so this is a coarse floor, not the primary relevance mechanism (see
 # citation grounding in rag.py, which checks what the answer actually cites).
 MIN_SEMANTIC_SCORE = 0.15
+# BM25 raw scores aren't comparable across queries (no fixed ceiling like
+# cosine similarity), so the floor is relative to the query's own top
+# score rather than an absolute number: a chunk scoring below this
+# fraction of the best keyword match in the same result set is weak
+# enough to be noise, even though score > 0. Calibrated conservatively —
+# this only trims the long tail, not borderline-relevant matches.
+MIN_BM25_RELATIVE_SCORE = 0.15
+# Cap on how many chunks a single article/section can contribute to one
+# fused result list. Without this, a long article that happens to score
+# well on both semantic and keyword search can occupy every context slot
+# (observed: one KVKK Art 9 chunk retrieved and recited five times),
+# crowding out other relevant articles entirely.
+MAX_CHUNKS_PER_ARTICLE = 2
 
 # --- LLM -------------------------------------------------------------------
 # "ollama" = local model (default, fully offline)

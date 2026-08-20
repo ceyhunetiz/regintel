@@ -14,6 +14,7 @@ tests, CI, and trying the pipeline before installing heavy dependencies.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 from functools import lru_cache
@@ -23,6 +24,8 @@ from rank_bm25 import BM25Okapi
 
 from regintel import config
 from regintel.ingestion.chunker import Chunk
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -195,17 +198,23 @@ class RegulationStore:
             if self.use_embeddings else []
         keyword = self._bm25_search(query, top_k * 3, regulation, doc_type)
         fused = _rrf([semantic, keyword]) if semantic else keyword
-        return fused[:top_k]
+        return _apply_diversity_cap(fused, top_k, config.MAX_CHUNKS_PER_ARTICLE)
 
     def _semantic_search(self, query, n, where) -> list[SearchResult]:
         n = min(n, max(self.collection.count(), 1))
         res = self.collection.query(query_texts=[query], n_results=n, where=where)
-        return [
-            SearchResult(id=i, text=d, metadata=m, score=1 - dist)
-            for i, d, m, dist in zip(res["ids"][0], res["documents"][0],
-                                     res["metadatas"][0], res["distances"][0])
-            if 1 - dist >= config.MIN_SEMANTIC_SCORE
-        ]
+        kept, dropped = [], 0
+        for i, d, m, dist in zip(res["ids"][0], res["documents"][0],
+                                 res["metadatas"][0], res["distances"][0]):
+            score = 1 - dist
+            if score >= config.MIN_SEMANTIC_SCORE:
+                kept.append(SearchResult(id=i, text=d, metadata=m, score=score))
+            else:
+                dropped += 1
+        if dropped:
+            logger.debug("semantic: dropped %d chunk(s) below MIN_SEMANTIC_SCORE "
+                        "(%.2f) for query %r", dropped, config.MIN_SEMANTIC_SCORE, query)
+        return kept
 
     def _bm25_search(self, query, n, regulation, doc_type=None) -> list[SearchResult]:
         self._ensure_bm25()
@@ -216,6 +225,7 @@ class RegulationStore:
         scores = self._bm25.get_scores(_tokenize(query))
         ranked = sorted(zip(self._bm25_ids, scores), key=lambda x: -x[1])
         out = []
+        top_score = None
         for id_, score in ranked:
             doc, meta = self._bm25_docs[id_]
             if regulation and meta.get("regulation") != regulation:
@@ -223,6 +233,18 @@ class RegulationStore:
             if allowed_types and meta.get("doc_type", "statute") not in allowed_types:
                 continue
             if score <= 0:
+                break
+            # BM25 scores aren't comparable across queries, so the floor
+            # is relative to this query's own top (allowed) match — see
+            # config.MIN_BM25_RELATIVE_SCORE. Results stay sorted
+            # descending, so once one candidate falls below the floor,
+            # every remaining candidate would too.
+            if top_score is None:
+                top_score = score
+            elif score < top_score * config.MIN_BM25_RELATIVE_SCORE:
+                logger.debug("bm25: truncating at relative-score floor "
+                            "(top=%.3f, cutoff=%.3f) for query %r",
+                            top_score, score, query)
                 break
             out.append(SearchResult(id=id_, text=doc, metadata=meta, score=score))
             if len(out) >= n:
@@ -265,3 +287,28 @@ def _rrf(result_lists: list[list[SearchResult]],
     fused = [SearchResult(id=i, text=seen[i].text, metadata=seen[i].metadata,
                           score=s) for i, s in scores.items()]
     return sorted(fused, key=lambda r: -r.score)
+
+
+def _apply_diversity_cap(results: list[SearchResult], top_k: int,
+                         max_per_article: int) -> list[SearchResult]:
+    """Limit how many chunks from a single article/section can occupy the
+    final result list, so one long, well-scoring article can't crowd out
+    every other relevant one (observed: a single KVKK Art 9 chunk filling
+    5 of a scenario's context slots). Backfills from the capped-out
+    overflow if the quota would otherwise leave top_k under-filled —
+    diversity is a preference, not a reason to return fewer results than
+    asked for when nothing else is available.
+    """
+    counts: dict[tuple, int] = {}
+    kept, overflow = [], []
+    for r in results:
+        key = (r.metadata.get("regulation"), r.metadata.get("article_number"))
+        if counts.get(key, 0) < max_per_article:
+            counts[key] = counts.get(key, 0) + 1
+            kept.append(r)
+        else:
+            overflow.append(r)
+        if len(kept) >= top_k:
+            return kept[:top_k]
+    kept.extend(overflow[:max(0, top_k - len(kept))])
+    return kept[:top_k]

@@ -12,8 +12,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
 
+from regintel import config
 from regintel.ingestion.parser import parse_plain_text, parse_eurlex_html, parse_decision_text
-from regintel.ingestion.chunker import chunk_articles
+from regintel.ingestion.chunker import Chunk, chunk_articles
 from regintel.retrieval.store import RegulationStore
 from regintel.generation.rag import RagPipeline
 from regintel.generation.llm import EchoLLM
@@ -216,3 +217,115 @@ def test_doc_types_reports_indexed_types():
     s.add_chunks(chunk_articles(parse_decision_text(
         MOCK_DECISION, "MOCK-A", document_label="Kurul Kararı 2099/1")))
     assert s.doc_types("MOCK-A") == {"statute", "board_decision"}
+
+
+# --- Retrieval hygiene: relevance floor, diversity cap, jurisdiction routing
+
+
+def _mock_chunk(id_, text, reg, art, title=""):
+    return Chunk(id=id_, text=text, metadata={
+        "regulation": reg, "article_number": art, "article_title": title,
+        "chapter": "", "chunk_index": 0, "total_chunks": 1, "source_url": "",
+        "language": "en", "doc_type": "statute", "doc_date": "",
+        "in_force": True, "document_label": ""})
+
+
+def test_diversity_cap_limits_chunks_per_article():
+    """One article dominating every scored chunk must not crowd every
+    other relevant article out of the result list (the S3 failure: a
+    single Art 9 chunk retrieved and recited five times)."""
+    tmp = tempfile.mkdtemp()
+    s = RegulationStore(persist_dir=tmp, use_embeddings=False)
+    chunks = [_mock_chunk(f"MOCK-DIV-art9-{i}",
+                          f"encryption keys management part {i} for special "
+                          f"category data encryption keys transfer",
+                          "MOCK-DIV", "9") for i in range(5)]
+    chunks.append(_mock_chunk(
+        "MOCK-DIV-art6-0",
+        "special category data encryption keys must be held separately",
+        "MOCK-DIV", "6"))
+    # Unrelated distractor: with too few, too-similar documents, BM25's
+    # IDF term can go negative for common words and short-circuit the
+    # score<=0 cutoff before diversity capping even runs — a small-corpus
+    # artifact, not something this test is about.
+    chunks.append(_mock_chunk(
+        "MOCK-DIV-artX-0",
+        "third party ICT register contractual arrangements review annually",
+        "MOCK-DIV", "28"))
+    s.add_chunks(chunks)
+
+    # top_k=3 matches exactly what the two relevant articles can diversely
+    # supply (2 capped from article 9 + 1 from article 6) — a larger top_k
+    # would correctly backfill extra article-9 chunks rather than
+    # under-fill, which is intended (diversity is a preference, not a
+    # reason to return fewer results than requested), so isn't what this
+    # assertion is checking.
+    results = s.search("encryption keys special category data",
+                       top_k=3, regulation="MOCK-DIV")
+    by_article: dict[str, int] = {}
+    for r in results:
+        by_article[r.metadata["article_number"]] = \
+            by_article.get(r.metadata["article_number"], 0) + 1
+
+    assert by_article.get("9", 0) <= config.MAX_CHUNKS_PER_ARTICLE
+    assert "6" in by_article, "article 6 was crowded out entirely"
+
+
+def test_bm25_relative_floor_drops_weak_matches():
+    """A chunk that only incidentally shares one word with the query
+    (score far below the query's own top match) should be dropped before
+    it can be handed to the LLM as if it were relevant context."""
+    tmp = tempfile.mkdtemp()
+    s = RegulationStore(persist_dir=tmp, use_embeddings=False)
+    s.add_chunks([
+        _mock_chunk("A-1", "penetration testing frequency threat led "
+                    "penetration testing frequency requirements",
+                    "MOCK-DIV", "26"),
+        _mock_chunk("A-2", "administrative penalties publication annual "
+                    "report testing schedule unrelated matter",
+                    "MOCK-DIV", "54"),
+        # Distractor doc, same reason as test_diversity_cap_limits_chunks_per_article.
+        _mock_chunk("A-3", "third party ICT register contractual "
+                    "arrangements review annually",
+                    "MOCK-DIV", "28"),
+    ])
+    results = s.search("penetration testing frequency", top_k=5, regulation="MOCK-DIV")
+    ids = {r.id for r in results}
+    assert "A-1" in ids
+    assert "A-2" not in ids, "weak keyword-overlap chunk was not filtered out"
+
+
+def test_detect_required_regulations_from_context_cues():
+    from regintel.generation.rag import _detect_required_regulations
+
+    kvkk_only = _detect_required_regulations(
+        "I'm a backend developer at a payments startup in Istanbul, what do I need to worry about?")
+    assert kvkk_only == {"KVKK"}
+
+    both = _detect_required_regulations(
+        "DevOps engineer at a mid-size EU bank here, our core banking API went down.")
+    assert "DORA" in both
+
+    explicit = _detect_required_regulations("Compare GDPR and KVKK encryption rules")
+    assert explicit == {"GDPR", "KVKK"}
+
+
+def test_multi_regulation_question_retrieves_all_named_regulations():
+    """When a question names more than one regulation, both must be
+    represented in the context handed to the LLM — a single unfiltered
+    search can let one instrument's chunks monopolize the ranking and
+    leave the other with zero representation (F4 in the eval report)."""
+    tmp = tempfile.mkdtemp()
+    s = RegulationStore(persist_dir=tmp, use_embeddings=False)
+    # Real acronyms as the mock regulation ids so _REG_NAME_RE (built from
+    # config.REGULATIONS) recognizes them without needing to monkeypatch —
+    # this is an isolated temp store, not the real corpus.
+    s.add_chunks(chunk_articles(parse_plain_text(MOCK_REG_A, "KVKK")))
+    s.add_chunks(chunk_articles(parse_plain_text(MOCK_REG_B, "DORA")))
+
+    pipe = RagPipeline(store=s, llm=EchoLLM())
+    results, _ = pipe._ask_prompt(
+        "Compare incident reporting under KVKK and DORA",
+        regulation=None, top_k=6)
+    regs = {r.metadata["regulation"] for r in results}
+    assert regs == {"KVKK", "DORA"}

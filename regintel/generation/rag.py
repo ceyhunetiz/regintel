@@ -22,6 +22,17 @@ _DANGLING_PREP_RE = re.compile(
     r"\b(under|per|pursuant to|according to)\s*[.,]?\s*$", re.IGNORECASE)
 _ARTICLE_MENTION_RE = re.compile(r"\b(?:article|art\.?|madde)\s+(\d+)\b", re.IGNORECASE)
 
+# Contextual cues that imply a regulation applies even when its acronym is
+# never named — e.g. "payments startup in Istanbul" implies KVKK without
+# saying "KVKK". See _detect_required_regulations().
+_KVKK_CONTEXT_RE = re.compile(
+    r"\b(istanbul|ankara|izmir|t[üu]rkiye|t[üu]rk vatanda|tckn|verb[iİ]s)\b",
+    re.IGNORECASE)
+_DORA_CONTEXT_RE = re.compile(
+    r"\b(eu bank|european bank|financial entit(?:y|ies)|"
+    r"ict third[- ]party|digital operational resilience|credit institution)\b",
+    re.IGNORECASE)
+
 
 def _strip_regulation_names(query: str) -> str:
     """Remove regulation acronyms (DORA, GDPR, KVKK...) from a retrieval
@@ -56,6 +67,27 @@ def _detect_single_regulation(question: str) -> str | None:
     """
     found = {m.upper() for m in _REG_NAME_RE.findall(question)}
     return found.pop() if len(found) == 1 else None
+
+
+def _detect_required_regulations(question: str) -> set[str]:
+    """Regulations that MUST be represented in retrieval, combining
+    explicit acronym mentions with contextual jurisdiction cues.
+
+    Scenario questions rarely name an instrument ("I'm a backend
+    developer at a payments startup in Istanbul...") — a plain
+    _detect_single_regulation() call finds nothing, retrieval stays
+    unfiltered, and whichever regulation happens to win RRF fusion
+    monopolizes the answer (the F4 finding: an Istanbul/KVKK scenario
+    answered entirely from GDPR+DORA). This adds the missing signal
+    without touching _detect_single_regulation, which existing callers
+    rely on for its narrower "explicit mention only" contract.
+    """
+    required = {m.upper() for m in _REG_NAME_RE.findall(question)}
+    if "KVKK" in config.REGULATIONS and _KVKK_CONTEXT_RE.search(question):
+        required.add("KVKK")
+    if "DORA" in config.REGULATIONS and _DORA_CONTEXT_RE.search(question):
+        required.add("DORA")
+    return required
 
 
 def cited_sources(answer: str, results: list[SearchResult]
@@ -185,11 +217,46 @@ class RagPipeline:
         if regulation is None:
             regulation = _detect_single_regulation(question)
         query = self._retrieval_query(question)
+
+        if regulation is None:
+            # A scenario question can imply more than one instrument
+            # without naming any of them (F4 in the eval report) — force
+            # per-regulation retrieval so a required instrument can't be
+            # crowded out of the RRF ranking entirely.
+            required = _detect_required_regulations(question)
+            if len(required) >= 2:
+                results = self._multi_regulation_search(query, required, top_k)
+                scope_note = "".join(self._scope_note(r) for r in sorted(required))
+                prompt = prompts.ANSWER_TEMPLATE.format(
+                    scope_note=scope_note,
+                    sources=prompts.format_sources(results), question=question)
+                return results, prompt
+            if len(required) == 1:
+                regulation = next(iter(required))
+
         results = self.store.search(query, top_k=top_k, regulation=regulation)
         prompt = prompts.ANSWER_TEMPLATE.format(
             scope_note=self._scope_note(regulation),
             sources=prompts.format_sources(results), question=question)
         return results, prompt
+
+    def _multi_regulation_search(self, query: str, regulations: set[str],
+                                  top_k: int) -> list[SearchResult]:
+        """Search each required regulation separately and merge, so every
+        regulation _detect_required_regulations() flagged actually
+        contributes chunks — mirrors _compare_prompt's per-regulation
+        retrieval, generalized to N regulations from context cues rather
+        than the two explicit reg_a/reg_b of comparison mode.
+        """
+        per_reg_k = max(top_k // len(regulations), 3)
+        results: list[SearchResult] = []
+        seen_ids: set[str] = set()
+        for reg in sorted(regulations):
+            for r in self.store.search(query, top_k=per_reg_k, regulation=reg):
+                if r.id not in seen_ids:
+                    seen_ids.add(r.id)
+                    results.append(r)
+        return results
 
     def _scope_note(self, regulation: str | None) -> str:
         """Corpus scope line for a single-instrument question — lets the
