@@ -48,12 +48,24 @@ MAX_CHUNKS_PER_ARTICLE = 2
 # startup...") often buries 3-4 distinct legal issues; a single retrieval
 # pass over the whole message catches at most one. Above this length (or
 # when jurisdiction routing detects 2+ regulations — see
-# _detect_required_regulations in rag.py) the pipeline first asks the LLM
+# _detect_required_regulations in rag.py — AND the question is at least
+# SCENARIO_MIN_LENGTH_FOR_MULTI_REG long) the pipeline first asks the LLM
 # to extract discrete sub-questions and retrieves per-issue instead.
-# Short, single-issue questions (the common case) never cross this
+# Short, single-issue questions (the common case) never cross either
 # threshold, so their latency is unaffected.
+#
+# The multi-regulation branch needs its own floor: a short one-sentence
+# question that merely *names* two regulations ("Both GDPR and DORA give
+# you a 72-hour deadline, right?") isn't a multi-issue scenario — it's a
+# single comparative question, and _detect_required_regulations alone
+# used to be enough to trigger decomposition on it (v2 eval, case Q11:
+# decomposition invented unrelated sub-questions and the answer went
+# off-topic). A question that short and single-issue is already handled
+# correctly by the non-decomposed multi-regulation search path in
+# _ask_prompt, so it doesn't need decomposition at all.
 SCENARIO_DECOMPOSITION_ENABLED = True
 SCENARIO_LENGTH_THRESHOLD = 400  # characters
+SCENARIO_MIN_LENGTH_FOR_MULTI_REG = 180  # characters
 
 # --- LLM -------------------------------------------------------------------
 # "ollama" = local model (default, fully offline)

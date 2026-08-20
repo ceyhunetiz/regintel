@@ -393,8 +393,28 @@ def test_needs_decomposition_triggers_on_length_and_multi_regulation():
 
     assert not pipe._needs_decomposition("KVKK'ya göre madde 6 nedir?")
     assert pipe._needs_decomposition("x " * 300)  # well past the length threshold
+    # Multi-regulation branch needs SCENARIO_MIN_LENGTH_FOR_MULTI_REG too
+    # (see test below) — this one clears it.
     assert pipe._needs_decomposition(
-        "Our Istanbul office and our EU bank subsidiary both process this data.")
+        "Our compliance team in Istanbul handles data for both our Turkish "
+        "retail customers and our EU bank subsidiary, and we're not sure "
+        "which rules apply to the shared customer database.")
+
+
+def test_short_multi_regulation_question_does_not_trigger_decomposition():
+    """Regression for the v2 eval finding on case Q11: a short, single-
+    issue comparative question ("Both GDPR and DORA give you a 72-hour
+    deadline, right? So one process covers both.") named two regulations
+    and wrongly triggered decomposition meant for long multi-issue
+    scenarios — producing unrelated sub-questions and an off-topic
+    answer. Short multi-regulation questions are already handled
+    correctly by the non-decomposed multi-regulation search path.
+    """
+    pipe = RagPipeline(store=RegulationStore(
+        persist_dir=tempfile.mkdtemp(), use_embeddings=False), llm=EchoLLM())
+    q = "Both GDPR and DORA give you a 72-hour deadline after an incident, right? So one process covers both."
+    assert len(q) < config.SCENARIO_MIN_LENGTH_FOR_MULTI_REG
+    assert not pipe._needs_decomposition(q)
 
 
 def test_decompose_question_returns_single_item_for_echollm():

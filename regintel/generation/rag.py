@@ -311,11 +311,18 @@ class RagPipeline:
         signs of a multi-issue scenario a single retrieval pass would
         under-serve. Short single-issue questions (the common case) never
         cross the length threshold, so their latency is unaffected.
+
+        The multi-regulation branch also requires
+        SCENARIO_MIN_LENGTH_FOR_MULTI_REG — see that constant's comment
+        in config.py for why a short comparative question naming two
+        regulations shouldn't decompose on its own.
         """
         if not config.SCENARIO_DECOMPOSITION_ENABLED:
             return False
         if len(question) > config.SCENARIO_LENGTH_THRESHOLD:
             return True
+        if len(question) < config.SCENARIO_MIN_LENGTH_FOR_MULTI_REG:
+            return False
         return len(_detect_required_regulations(question)) >= 2
 
     def _decompose_question(self, question: str) -> list[str]:
