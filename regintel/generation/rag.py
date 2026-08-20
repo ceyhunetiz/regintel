@@ -94,32 +94,88 @@ def _detect_required_regulations(question: str) -> set[str]:
     return required
 
 
+# Citation-binding check (item 5): a marker citing a real, in-range
+# source can still be attached to a claim that source doesn't actually
+# support — the model reaching for the nearest numbered source rather
+# than the right one. Checked with lexical overlap rather than a second
+# LLM call: cheap, deterministic, and adds no generation latency. Short
+# stopword lists (EN + TR) keep the overlap signal on content words
+# rather than grammatical glue that would overlap with almost anything.
+_STOPWORDS = frozenset({
+    "the", "and", "for", "that", "with", "this", "from", "shall", "must",
+    "have", "been", "will", "not", "are", "was", "were", "its", "their",
+    "they", "which", "such", "also", "when", "where", "under", "into",
+    "only", "than", "then", "these", "those", "about", "between",
+    "within", "upon", "more", "some", "any", "all", "can", "may",
+    "should", "would", "could", "does", "each", "other", "being",
+    "veya", "gibi", "için", "olan", "olarak", "ile", "ancak", "ise",
+    "kadar", "göre", "üzere", "olması", "olduğu", "olduğunu", "olup",
+    "değil", "edilir", "edilmesi", "edilecek", "yapılır", "veya",
+    "kişisel", "verilerin",
+})
+_MIN_CITATION_OVERLAP = 0.12
+_WORD_RE = re.compile(r"[a-zA-ZçğıöşüÇĞİÖŞÜ]{4,}")
+
+
+def _content_words(text: str) -> set[str]:
+    return {w for w in (m.lower() for m in _WORD_RE.findall(text))
+           if w not in _STOPWORDS}
+
+
+def _marker_claim(text: str, start: int, end: int) -> str:
+    """The sentence around a [n] marker's position in `text` — from the
+    previous sentence boundary to the next — i.e. the claim the marker is
+    actually attached to, not the whole answer."""
+    left = max(text.rfind(".", 0, start), text.rfind("!", 0, start),
+              text.rfind("?", 0, start), text.rfind("\n", 0, start))
+    right_candidates = [p for p in (
+        text.find(".", end), text.find("!", end),
+        text.find("?", end), text.find("\n", end)) if p != -1]
+    right = min(right_candidates) if right_candidates else len(text)
+    return text[left + 1:right + 1]
+
+
+def _is_grounded(claim: str, source_text: str) -> bool:
+    claim_words = _content_words(claim)
+    if not claim_words:
+        return True  # nothing substantive in the claim to check
+    overlap = claim_words & _content_words(source_text)
+    return len(overlap) / len(claim_words) >= _MIN_CITATION_OVERLAP
+
+
 def cited_sources(answer: str, results: list[SearchResult]
                   ) -> tuple[str, list[int], list[SearchResult]]:
     """Sources the answer actually cited via [n] markers, not the raw
-    retrieval set — plus the answer text with any dangling markers
-    stripped.
+    retrieval set — plus the answer text with any dangling or unsupported
+    markers stripped.
 
     Retrieval always returns top_k results whether or not they're
     relevant; without this, a refusal ("sources don't cover this") would
     still display every retrieved chunk as if it backed the answer. Only
-    markers the model actually wrote, that resolve to a real source, are
-    kept — a refusal with no [n] markers correctly comes back empty. A
-    marker citing a source number that doesn't exist (e.g. [6] against
-    3 sources — the model hallucinating a citation) is stripped from the
-    answer text entirely rather than left dangling: an unresolved marker
-    reads as per-claim attribution to a reader and is worse than no
-    marker at all. Indices are the original 1-based marker numbers
-    (matching format_sources' numbering), not a fresh 1..k, so a
-    displayed "[3]" always matches the "[3]" left in the answer text.
+    markers the model actually wrote, that resolve to a real source AND
+    whose immediate claim is actually grounded in that source's text
+    (see _is_grounded), are kept — a refusal with no [n] markers
+    correctly comes back empty. A marker citing a source number that
+    doesn't exist (e.g. [6] against 3 sources) or citing a real source
+    that doesn't support the sentence it's attached to (the model
+    reaching for the nearest numbered source instead of the right one)
+    is stripped from the answer text entirely rather than left dangling:
+    an unresolved or false attribution reads as per-claim evidence to a
+    reader and is worse than no marker at all. Indices are the original
+    1-based marker numbers (matching format_sources' numbering), not a
+    fresh 1..k, so a displayed "[3]" always matches the "[3]" left in the
+    answer text.
     """
     valid_max = len(results)
 
-    def _strip_invalid(m: re.Match) -> str:
+    def _strip_ungrounded(m: re.Match) -> str:
         n = int(m.group(1))
-        return m.group(0) if 1 <= n <= valid_max else ""
+        if not (1 <= n <= valid_max):
+            return ""
+        claim = _marker_claim(m.string, m.start(), m.end())
+        return m.group(0) if _is_grounded(claim, results[n - 1].text) else ""
 
-    clean_answer = _CITATION_RE.sub(_strip_invalid, answer)
+    clean_answer = _CITATION_RE.sub(_strip_ungrounded, answer)
     # Tidy up connective words/punctuation left dangling by a removed
     # marker, e.g. "...by [3] and [6]." -> "...by [3] and ." -> "...[3]."
     clean_answer = re.sub(r"\s+and\s*([.,;:]|$)", r"\1", clean_answer)

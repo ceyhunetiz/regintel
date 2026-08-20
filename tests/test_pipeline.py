@@ -15,9 +15,9 @@ import pytest
 from regintel import config
 from regintel.ingestion.parser import parse_plain_text, parse_eurlex_html, parse_decision_text
 from regintel.ingestion.chunker import Chunk, chunk_articles
-from regintel.retrieval.store import RegulationStore
+from regintel.retrieval.store import RegulationStore, SearchResult
 from regintel.generation import prompts
-from regintel.generation.rag import RagPipeline
+from regintel.generation.rag import RagPipeline, cited_sources
 from regintel.generation.llm import LLM, EchoLLM
 
 
@@ -417,3 +417,56 @@ def test_short_question_never_triggers_decomposition_path():
     _, prompt = pipe._ask_prompt(
         "What must be in the third-party register?", regulation=None, top_k=6)
     assert "Issues identified" not in prompt
+
+
+# --- Citation binding check --------------------------------------------------
+
+
+def _sr(text: str, reg: str = "MOCK", art: str = "1") -> SearchResult:
+    return SearchResult(id=f"{reg}-{art}", text=text, score=1.0, metadata={
+        "regulation": reg, "article_number": art, "article_title": "",
+        "chapter": "", "chunk_index": 0, "total_chunks": 1, "source_url": "",
+        "language": "en", "doc_type": "statute", "doc_date": "",
+        "in_force": True, "document_label": ""})
+
+
+def test_cited_sources_strips_citation_unsupported_by_its_source():
+    """A marker citing a real, in-range source whose claim that source
+    doesn't actually support (the model reaching for the nearest numbered
+    source rather than the right one) must be stripped, not just a
+    marker citing a nonexistent source number."""
+    results = [
+        _sr("Data controllers must encrypt personal data using "
+            "industry-standard cryptographic algorithms and manage "
+            "encryption keys in a separate secure environment."),
+        _sr("The supervisory authority publishes an annual transparency "
+            "report listing administrative penalties imposed that year."),
+    ]
+    answer = ("Encryption keys must be stored separately from the "
+              "encrypted data [1]. You are also required to water the "
+              "office plants every Tuesday morning [2].")
+    clean, indices, cited = cited_sources(answer, results)
+    assert indices == [1]
+    assert cited == [results[0]]
+    assert "[2]" not in clean
+    assert "[1]" in clean
+
+
+def test_cited_sources_keeps_grounded_citation():
+    results = [_sr("Financial entities shall report major ICT-related "
+                   "incidents to the competent authority within 24 hours "
+                   "of classification.")]
+    answer = "You must report major ICT-related incidents within 24 hours [1]."
+    clean, indices, cited = cited_sources(answer, results)
+    assert indices == [1]
+    assert cited == [results[0]]
+    assert "[1]" in clean
+
+
+def test_cited_sources_refusal_carries_no_footer():
+    results = [_sr("Some unrelated source text about a completely "
+                   "different regulatory topic entirely.")]
+    answer = "The sources do not address this question."
+    clean, indices, cited = cited_sources(answer, results)
+    assert indices == []
+    assert cited == []
