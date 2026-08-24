@@ -12,7 +12,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from regintel import config
-from regintel.ingestion.parser import parse_eurlex_html, parse_plain_text, parse_decision_text
+from regintel.ingestion.parser import (parse_eurlex_html, parse_plain_text,
+                                       parse_decision_text)
 from regintel.ingestion.chunker import chunk_articles
 from regintel.retrieval.store import RegulationStore
 
@@ -58,15 +59,31 @@ def ingest(reg_id: str, store: RegulationStore) -> None:
 
     # Clear before re-adding: re-parsing can change how many chunks an
     # article produces, and upsert alone would leave stale ids behind.
+    # clear_regulation() only touches statute chunks (see its docstring)
+    # — this re-ingest never needs to, and never does, touch this
+    # regulation's Board decisions/RTS/guidelines.
     store.clear_regulation(reg_id)
     store.add_chunks(chunks)
     print(f"  Indexed. Processed articles saved to {out}")
 
 
 def ingest_document(doc_id: str, store: RegulationStore) -> None:
-    """Ingest a Board decision or guideline (config.DOCUMENTS entry) —
-    these don't have "Madde N" headings, so they go through
-    parse_decision_text() rather than the statute path in ingest().
+    """Ingest a non-statute document (config.DOCUMENTS entry): a Board
+    decision, guideline, EU Level-2 RTS/ITS, delegated-act adoption
+    text, or supervisory opinion/decision — none of these are the base
+    regulation's own statute text.
+
+    Two source structures need two different parsers, selected by each
+    entry's "parser" key:
+      - "decision": Turkish Kurul kararı numbered/lettered lists, or any
+        other document with no "Article N" headings at all (guidelines,
+        opinions, decisions between authorities) — parse_decision_text().
+      - "articles": EU Level-2 instruments that DO have "Article N"
+        headings, just under a different legal instrument than the base
+        regulation (e.g. DORA's incident-reporting RTS has its own
+        Article 1..N) — parse_plain_text(), with doc_type/document_label
+        passed through so chunker.py doesn't treat it as the base
+        regulation's own statute (see parse_plain_text's docstring).
     """
     meta = config.DOCUMENTS.get(doc_id)
     if not meta:
@@ -80,11 +97,20 @@ def ingest_document(doc_id: str, store: RegulationStore) -> None:
               f"to obtain {meta['document_label']}.")
         return
 
-    articles = parse_decision_text(
-        txt_path.read_text(encoding="utf-8"), meta["regulation"],
-        document_label=meta["document_label"], doc_type=meta["doc_type"],
-        doc_date=meta["doc_date"], in_force=meta["in_force"],
-        source_url=meta.get("url", ""), language=meta.get("language", "tr"))
+    text = txt_path.read_text(encoding="utf-8")
+    parser = meta.get("parser", "decision")
+    if parser == "articles":
+        articles = parse_plain_text(
+            text, meta["regulation"], doc_type=meta["doc_type"],
+            document_label=meta["document_label"], doc_date=meta["doc_date"],
+            in_force=meta["in_force"], source_url=meta.get("url", ""),
+            language=meta.get("language", "en"))
+    else:
+        articles = parse_decision_text(
+            text, meta["regulation"],
+            document_label=meta["document_label"], doc_type=meta["doc_type"],
+            doc_date=meta["doc_date"], in_force=meta["in_force"],
+            source_url=meta.get("url", ""), language=meta.get("language", "tr"))
 
     chunks = chunk_articles(articles)
     print(f"  {doc_id}: {len(articles)} section(s) -> {len(chunks)} chunks")
@@ -106,8 +132,11 @@ def main() -> None:
     store = RegulationStore()
     targets = sys.argv[1:]
     if not targets:
+        # .pdf included: ingest() has handled PDFs all along, but the
+        # no-args discovery used to skip them, so e.g. BDDK.pdf was
+        # silently ignored unless named explicitly on the command line.
         statute_ids = {p.stem for p in config.RAW_DIR.glob("*")
-                       if p.suffix in (".html", ".txt")} - set(config.DOCUMENTS)
+                       if p.suffix in (".html", ".txt", ".pdf")} - set(config.DOCUMENTS)
         doc_ids = {p.stem for p in config.RAW_DIR.glob("*.txt")
                   if p.stem in config.DOCUMENTS}
         targets = sorted(statute_ids | doc_ids)

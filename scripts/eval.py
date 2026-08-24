@@ -71,7 +71,7 @@ def _retrieved_set(pipe: RagPipeline, case: dict, top_k: int = 8):
     """
     if case["mode"] == "compare":
         results, _ = pipe._compare_prompt(
-            case["question"], case["reg_a"], case["reg_b"], top_k_each=4)
+            case["question"], case["reg_a"], case["reg_b"], top_k_each=top_k)
     else:
         results, _ = pipe._ask_prompt(case["question"], case.get("regulation"), top_k)
     article_pairs = {(r.metadata["regulation"], str(r.metadata["article_number"]))
@@ -221,9 +221,17 @@ def main() -> None:
                     "available, else falls back to EchoLLM automatically.")
     ap.add_argument("--case", action="append", dest="cases",
                     help="run only this case id (repeatable)")
+    ap.add_argument("--cases", dest="cases_path", default=str(CASES_PATH),
+                    help="path to a case file (default: tests/eval_cases.yaml). "
+                         "Lets a separate set — e.g. tests/eval_cases_v4.yaml — "
+                         "run without disturbing the original 20-case set.")
     args = ap.parse_args()
 
-    cases = yaml.safe_load(CASES_PATH.read_text(encoding="utf-8"))["cases"]
+    cases_path = Path(args.cases_path)
+    if not cases_path.exists():
+        print(f"No such case file: {cases_path}")
+        raise SystemExit(1)
+    cases = yaml.safe_load(cases_path.read_text(encoding="utf-8"))["cases"]
     if args.cases:
         wanted = set(args.cases)
         cases = [c for c in cases if c["id"] in wanted]

@@ -1,0 +1,401 @@
+# v4 evaluation set — 2026-08-22
+#
+# 15 cases: 3 direct per regulation (KVKK / GDPR / DORA), 3 cross-
+# instrument comparisons, 3 real-world scenarios (Turkey, EU, and one
+# genuinely cross-border).
+#
+# Same schema as tests/eval_cases.yaml — run with:
+#     python scripts/eval.py --cases tests/eval_cases_v4.yaml            # full, live LLM
+#     python scripts/eval.py --cases tests/eval_cases_v4.yaml --llm echo # retrieval only
+#
+# Ground truth was verified against data/raw/ directly, not assumed.
+# Design notes, per block:
+#
+#  - Every regulation gets at least one question whose real answer lives
+#    OUTSIDE its base statute (a Kurul kararı, an RTS), because that is
+#    the failure this corpus was expanded to fix and the one a
+#    statute-only paraphrase silently gets wrong.
+#  - Language is deliberately crossed: KVKK is asked once in English and
+#    GDPR once in Turkish, so cross-lingual retrieval AND the
+#    cross-lingual citation-grounding path both get exercised. A
+#    same-language-only set would never touch either.
+#  - C3 (DORA vs KVKK) is included precisely because the pairing is
+#    lopsided — KVKK has almost nothing on ICT vendor risk. The correct
+#    answer names that asymmetry instead of manufacturing a counterpart.
+
+cases:
+
+  # ========================= KVKK — direct =========================
+
+  - id: K1
+    mode: ask
+    regulation: null
+    language: en
+    failure_mode: [P5, cross-lingual]
+    question: "What adequate measures must a data controller take when processing special categories of personal data under Turkish data protection law?"
+    expected: >-
+      The operative list of measures is Kurul Kararı 2018/10, not KVKK
+      Madde 6 itself — Madde 6 sets the lawful-basis conditions, while
+      the Board decision is what actually enumerates the required
+      technical/administrative measures (separate policy, training,
+      encryption, key storage in a separate environment, access logs...).
+      An English question against a Turkish-only corpus, so this also
+      tests cross-lingual retrieval and whether the citation survives
+      grounding.
+    fail_condition: >-
+      Paraphrases Madde 6's processing conditions as if they were the
+      required measures; or answers with no citations at all because the
+      grounding check stripped every marker on the language boundary.
+    checks:
+      must_retrieve_documents:
+        - {regulation: KVKK, document_label: "Kurul Kararı 2018/10"}
+      citations_from_only: [KVKK]
+
+  - id: K2
+    mode: ask
+    regulation: null
+    language: tr
+    failure_mode: [P5]
+    question: "Bir veri ihlalini Kurula ne kadar sürede bildirmem gerekiyor?"
+    expected: >-
+      72 saat — but the number is NOT in the statute. KVKK Madde 12(5)
+      says only "en kısa sürede"; Kurul Kararı 2019/10 is what interprets
+      that as 72 hours from the controller becoming aware. A correct
+      answer cites the Board decision for the figure, and ideally notes
+      the statute's own wording.
+    fail_condition: >-
+      States "72 saat" citing only Madde 12 (attributing a Board-decision
+      figure to the statute), or says the sources give no deadline.
+    checks:
+      must_retrieve_documents:
+        - {regulation: KVKK, document_label: "Kurul Kararı 2019/10"}
+      require_regex: "72"
+      citations_from_only: [KVKK]
+
+  - id: K3
+    mode: ask
+    regulation: null
+    language: tr
+    failure_mode: [P4]
+    question: "Kişisel verilerin yurt dışına aktarılması hangi şartlarda mümkündür?"
+    expected: >-
+      KVKK Madde 9, as amended by Law 7499 (2024) — the current regime
+      (yeterlilik kararı, uygun güvenceler / standart sözleşme, and the
+      istisnai hâller). The amendment is carried inline in the statute
+      text as "(Değişik:2/3/2024-7499/... md.)".
+    fail_condition: >-
+      Describes the pre-2024 regime (e.g. presenting the old written
+      undertaking + Kurul permission route as the current rule) without
+      the amendment, or attributes the change to an invented instrument.
+    checks:
+      must_retrieve_articles:
+        - {regulation: KVKK, article: 9}
+      citations_from_only: [KVKK]
+
+  # ========================= GDPR — direct =========================
+
+  - id: G1
+    mode: ask
+    regulation: null
+    language: en
+    failure_mode: []
+    question: "What information must a controller include when notifying a personal data breach to the supervisory authority, and within what deadline?"
+    expected: >-
+      GDPR Article 33 — without undue delay and where feasible not later
+      than 72 hours after becoming aware; the notification must at least
+      describe the nature of the breach, categories and approximate
+      numbers of data subjects and records, the DPO contact point, likely
+      consequences, and measures taken/proposed. Where notification is
+      later than 72 hours it must be accompanied by reasons for the delay.
+    fail_condition: >-
+      Cites KVKK or DORA as authority; states the 72-hour figure without
+      Article 33; or omits the required content list entirely while
+      claiming to answer the "what information" half.
+    checks:
+      must_retrieve_articles:
+        - {regulation: GDPR, article: 33}
+      require_regex: "72"
+      citations_from_only: [GDPR]
+
+  - id: G2
+    mode: ask
+    regulation: null
+    language: en
+    failure_mode: []
+    question: "When is a data protection impact assessment mandatory, and what must it contain?"
+    expected: >-
+      GDPR Article 35 — required where processing is likely to result in
+      a high risk, with the three listed trigger cases (systematic and
+      extensive automated evaluation incl. profiling; large-scale special
+      categories or criminal-conviction data; large-scale systematic
+      monitoring of a publicly accessible area) and the minimum content
+      in Art 35(7).
+    fail_condition: >-
+      Invents a numeric threshold for "large scale" that the sources do
+      not state, or presents the supervisory authority's own list
+      obligation (Art 35(4)) as the controller's trigger.
+    checks:
+      must_retrieve_articles:
+        - {regulation: GDPR, article: 35}
+      citations_from_only: [GDPR]
+
+  - id: G3
+    mode: ask
+    regulation: GDPR
+    language: tr
+    failure_mode: [cross-lingual]
+    question: "Bir veri sorumlusu kişisel verileri AB dışına hangi uygun güvencelere dayanarak aktarabilir?"
+    expected: >-
+      GDPR Madde 46 (uygun güvenceler: standart sözleşme hükümleri,
+      bağlayıcı şirket kuralları, onaylı davranış kuralları/sertifikasyon)
+      ve genel ilke olarak Madde 44; yeterlilik kararı Madde 45.
+      A Turkish question against an English-only instrument — the answer
+      must stay in Turkish end to end (rule 6) while citing English
+      sources, which is exactly the cross-lingual grounding path.
+    fail_condition: >-
+      Switches to English partway through; loses all citations to the
+      grounding check; or answers from KVKK Madde 9 because the Turkish
+      wording pulled routing toward the Turkish instrument.
+    checks:
+      must_retrieve_articles:
+        - {regulation: GDPR, article: 46}
+      citations_from_only: [GDPR]
+
+  # ========================= DORA — direct =========================
+
+  - id: D1
+    mode: ask
+    regulation: null
+    language: en
+    failure_mode: [P5]
+    question: "What are the deadlines for submitting the initial notification, intermediate report and final report for a major ICT-related incident?"
+    expected: >-
+      The figures live in Commission Delegated Regulation (EU) 2025/301
+      Art 5, not in DORA itself: initial notification within 4 hours of
+      classification as major and no later than 24 hours from becoming
+      aware; intermediate report within 72 hours of the initial
+      notification; final report no later than one month after the
+      intermediate. DORA Art 19 is the enabling provision.
+    fail_condition: >-
+      Gives the timings citing only DORA Art 19 (which does not contain
+      them), or cites RTS 2024/1772 — that RTS is classification
+      criteria, and its own text says it is not the timeline RTS.
+    checks:
+      must_retrieve_documents:
+        - {regulation: DORA, document_label: "Commission Delegated Regulation (EU) 2025/301"}
+      require_regex: "72|24|four|4 hour"
+      citations_from_only: [DORA]
+
+  - id: D2
+    mode: ask
+    regulation: null
+    language: en
+    failure_mode: []
+    question: "How often must financial entities carry out threat-led penetration testing?"
+    expected: >-
+      DORA Article 26 — at least every three years, for financial
+      entities identified as in scope by competent authorities (with the
+      RTS 2025/1190 detail on how TLPT is conducted).
+    fail_condition: >-
+      Invents a different frequency (annually, every two years), or
+      states no frequency is given when Art 26 supplies one.
+    checks:
+      must_retrieve_articles:
+        - {regulation: DORA, article: 26}
+      require_regex: "three years|3 years|üç yıl"
+      citations_from_only: [DORA]
+
+  - id: D3
+    mode: ask
+    regulation: null
+    language: en
+    failure_mode: [P1]
+    question: "What must a financial entity record in its register of information on contractual arrangements with ICT third-party service providers?"
+    expected: >-
+      DORA Article 28(3) requires the register at entity, sub-
+      consolidated and consolidated level, distinguishing arrangements
+      that support critical or important functions; the standard
+      templates are in Implementing Regulation (EU) 2024/2956.
+    fail_condition: >-
+      Cites GDPR Article 30 (records of processing activities) — a
+      different register for a different purpose, and the classic
+      cross-instrument confusion this case exists to catch.
+    checks:
+      must_retrieve_articles:
+        - {regulation: DORA, article: 28}
+      citations_from_only: [DORA]
+
+  # ====================== Cross-instrument compare ======================
+
+  - id: C1
+    mode: compare
+    reg_a: KVKK
+    reg_b: GDPR
+    language: en
+    failure_mode: [P1, P5]
+    question: "How do the two regimes differ on notifying the regulator about a personal data breach — deadline, trigger, and required content?"
+    expected: >-
+      Both land on 72 hours, but from structurally different places:
+      GDPR Art 33 puts it in the regulation itself with a risk-based
+      exemption ("unless unlikely to result in a risk"); KVKK's statute
+      (Madde 12(5)) says only "en kısa sürede" and the 72-hour figure
+      comes from Kurul Kararı 2019/10, with the content of the
+      notification to affected individuals set by 2019/271. The
+      interesting answer names that difference in SOURCE TYPE rather
+      than reporting "both say 72 hours" as if the instruments were
+      equivalent.
+    fail_condition: >-
+      Presents the 72-hour figure as statutory in both; cites a GDPR
+      source in the KVKK column or vice versa; or blends the two into
+      one undifferentiated deadline.
+    checks:
+      must_retrieve_articles:
+        - {regulation: GDPR, article: 33}
+      citations_from_only: [KVKK, GDPR]
+
+  - id: C2
+    mode: compare
+    reg_a: DORA
+    reg_b: GDPR
+    language: en
+    failure_mode: [P1]
+    question: "How do the incident reporting obligations compare in terms of what event triggers the clock and how fast the first report is due?"
+    expected: >-
+      These are NOT the same obligation wearing two labels (SYSTEM_PROMPT
+      rule 14). DORA's trigger is a major ICT-related incident,
+      classified against RTS 2024/1772 criteria, with initial
+      notification in 4h/24h under RTS 2025/301 — personal data need not
+      be involved at all. GDPR's trigger is a personal data breach, 72h
+      to the supervisory authority under Art 33. A good answer keeps the
+      triggers separate and does not merge the two 72-hour figures,
+      which mean different things (GDPR: first report; DORA: the
+      intermediate report).
+    fail_condition: >-
+      Merges the two 72-hour figures into one shared deadline, or
+      describes DORA's obligation as being about personal data.
+    checks:
+      must_retrieve_articles:
+        - {regulation: GDPR, article: 33}
+      citations_from_only: [DORA, GDPR]
+
+  - id: C3
+    mode: compare
+    reg_a: DORA
+    reg_b: KVKK
+    language: en
+    failure_mode: [P1, false-parity]
+    question: "How does each regime govern oversight of third-party service providers that process or support the handling of customer data?"
+    expected: >-
+      Deliberately lopsided. DORA has an extensive regime (Art 28-30
+      contractual requirements, the register of information, RTS
+      2024/1773 on the contractual policy, RTS 2025/532 on
+      subcontracting, Art 31 critical-provider designation). KVKK has
+      essentially one provision — Madde 12(2), joint responsibility of
+      controller and processor for security measures — and no ICT
+      vendor-risk regime at all. The correct answer says so plainly in
+      the KVKK column.
+    fail_condition: >-
+      Manufactures a KVKK counterpart to DORA's vendor regime by
+      stretching Madde 12 or a Board decision, or fills the KVKK column
+      with off-topic filler retrieved only because retrieval always
+      returns a full quota per side.
+    checks:
+      citations_from_only: [DORA, KVKK]
+
+  # ========================= Real-world scenarios =========================
+
+  - id: S1
+    mode: ask
+    regulation: null
+    language: tr
+    failure_mode: [P4, P5]
+    question: >-
+      İstanbul'da bir sağlık teknolojisi girişiminde backend geliştiricisiyim.
+      Hastaların randevu notlarını serbest metin alanında tutuyoruz ve bu
+      alana zaman zaman doktorlar teşhis bilgisi de yazıyor; bu alan
+      şifrelenmiş değil. Gece yedeklerini Frankfurt'taki bir bulut
+      sağlayıcısına gönderiyoruz ve onlarla sadece standart hizmet
+      sözleşmemiz var. Dört gün önce bir çalışanın yetkisiz şekilde bu
+      notlara eriştiğini fark ettik. Ekip liderim "sağlık verisi olmadığı
+      için özel bir şey yapmamıza gerek yok" diyor. Ne yapmamız gerekiyor?
+    expected: >-
+      Multi-issue, and the embedded premise is false: diagnosis
+      information in a notes field IS özel nitelikli kişisel veri under
+      KVKK Madde 6, so the team lead's claim must be corrected first
+      (rule 2). Then: Madde 6 processing conditions and Kurul Kararı
+      2018/10's required measures (encryption, separate key storage,
+      access logs) for the unencrypted field; Madde 9 for the nightly
+      transfer to Frankfurt (a yurt dışı aktarım needing its own legal
+      basis, not covered by a standard service contract); Madde 12(5)
+      plus Kurul Kararı 2019/10 for the breach — and the 72-hour window
+      has already been missed at four days, which the answer should say
+      rather than reciting the deadline as if it were still open.
+    fail_condition: >-
+      Accepts the "not health data" premise; answers from GDPR because
+      Frankfurt was mentioned, without establishing KVKK as the primary
+      regime; or misses the transfer issue entirely.
+    checks:
+      must_retrieve_articles:
+        - {regulation: KVKK, article: 6}
+      citations_from_only: [KVKK]
+
+  - id: S2
+    mode: ask
+    regulation: null
+    language: en
+    failure_mode: [P1]
+    question: >-
+      I run platform operations at an EU-licensed payment institution. Our
+      main card-processing vendor had an outage that took our checkout
+      down for about 30 hours across two member states. While restoring
+      service we found that an internal error log had been exposing
+      customer names and partial card numbers to a support tool that
+      contractors could read. Our vendor contract has no exit plan and we
+      never added this vendor to any register. What are our obligations
+      and how fast do they run?
+    expected: >-
+      Two distinct regimes, and they must be answered separately (rule
+      8): DORA for the ICT incident (Art 17 management process, Art 19
+      reporting, RTS 2025/301 timings, Art 28-30 contractual
+      requirements incl. the missing exit plan and the register of
+      information), and GDPR for the personal-data exposure (Art 33 to
+      the supervisory authority, Art 34 to data subjects if high risk,
+      Art 32 security). The two clocks run independently from different
+      trigger events.
+    fail_condition: >-
+      Answers under only one instrument; merges the DORA and GDPR
+      deadlines into a single timeline; or treats the vendor outage as
+      a personal data breach.
+    checks:
+      must_retrieve_articles:
+        - {regulation: GDPR, article: 33}
+      citations_from_only: [DORA, GDPR]
+
+  - id: S3
+    mode: ask
+    regulation: null
+    language: tr
+    failure_mode: [P1, jurisdiction]
+    question: >-
+      Türkiye'de kurulu bir bankanın bilgi güvenliği ekibindeyim.
+      Amsterdam'da bir şubemiz var ve hem Türkiye'deki hem AB'deki
+      müşterilerin verileri aynı merkezi CRM'de tutuluyor. Yeni bir
+      İrlanda merkezli SaaS sağlayıcısıyla çalışmaya başlayacağız; bu
+      sağlayıcı CRM verilerine erişecek. Hangi mevzuatlar devreye giriyor
+      ve her biri için ne yapmamız gerekiyor?
+    expected: >-
+      All three plausibly apply and the answer must separate them by
+      jurisdictional trigger (rule 15), not merge them: KVKK for the
+      Turkish establishment and Turkish customers' data (Madde 9 for the
+      provider's access as a yurt dışı aktarım, Madde 12 security);
+      GDPR for the Amsterdam branch / EU customers (Art 28 processor
+      terms, Art 44-46 transfers out of the EEA to Türkiye); and DORA
+      for the bank's EU-regulated entity's ICT third-party arrangement
+      (Art 28-30, RTS 2024/1773). Answer must be Turkish throughout.
+    fail_condition: >-
+      Returns KVKK only because the Turkish cues fired first (the exact
+      silent-lockout bug this project already fixed once); presents all
+      three as unconditionally applying to one single dataset; or drifts
+      into English partway through.
+    checks:
+      citations_from_only: [KVKK, GDPR, DORA]

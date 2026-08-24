@@ -6,6 +6,8 @@ in natural language; get answers grounded in the actual regulation text,
 with citations to the specific articles. Runs **fully locally** — no
 data leaves the machine.
 
+*([Türkçe README](README.tr.md))*
+
 ## Architecture
 
 ```
@@ -71,6 +73,11 @@ streamlit run ui/app.py
 uvicorn regintel.api.main:app --reload   # docs at http://localhost:8000/docs
 ```
 
+The chat UI's own interface is in Turkish; the LLM answers in whichever
+language the question was asked — English questions get English
+answers, Turkish questions get Turkish answers.
+```
+
 ## Adding a regulation
 
 1. Add an entry to `REGULATIONS` in `regintel/config.py`.
@@ -96,3 +103,29 @@ Every component — embeddings (sentence-transformers), vector store
 The only network access needed is the one-time download of regulation
 texts and the embedding model, both of which can be done outside the
 production environment and copied in.
+
+## Team deployment (bank server + SSO)
+
+For a shared server where your team connects with their own
+credentials rather than everyone running it locally:
+
+1. **Ollama stays local to the server.** `OLLAMA_BASE_URL` in
+   `regintel/config.py` already points at `localhost:11434` — leave it
+   that way. Ollama has no auth of its own, so it must never be
+   reachable from the network, only from the Streamlit process on the
+   same machine.
+2. **Set up login.** Streamlit's built-in auth (`st.login`/`st.logout`,
+   used in `ui/app.py`) delegates to your bank's identity provider over
+   OIDC — no passwords stored by this app. Copy
+   `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml` and
+   fill in the `client_id`/`client_secret`/`server_metadata_url` your
+   IT team issues for an internal app registration. Without this file,
+   the app runs with **no login at all** — fine for your own laptop,
+   not for the shared server.
+3. **Put TLS in front of it.** Streamlit itself doesn't terminate
+   HTTPS. Run it behind an internal reverse proxy (nginx/Caddy) with
+   the bank's internal certificate, and point `redirect_uri` in
+   `secrets.toml` at that HTTPS URL.
+4. Every question/answer is still logged locally to
+   `data/chats/*.jsonl`, now tagged with the authenticated user's
+   identity — this is your audit trail of who asked what.

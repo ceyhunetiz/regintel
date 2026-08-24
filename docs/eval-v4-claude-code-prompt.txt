@@ -1,0 +1,343 @@
+================================================================================
+TASK PROMPT FOR CLAUDE CODE — RegIntel v4 evaluation: run the half that
+could not be run in the cloud sandbox, then report findings.
+================================================================================
+
+You are working in the RegIntel repository:
+
+    /Users/ceyhunetiz/Desktop/regintel_tur
+
+This is a RAG system for retrieving and comparing cybersecurity regulations
+across the EU and Türkiye (DORA, GDPR, KVKK). A prior session audited the
+pipeline, fixed 20+ bugs, built a 15-question evaluation set, and ran it —
+but only partially, because that session ran in a cloud sandbox that could
+NOT download the embedding model (huggingface.co was outside its egress
+allowlist) and had NO API key for the LLM.
+
+Your job is to run the parts that machine could not, on this machine, where
+both the cached embedding model and the OpenRouter API key exist — and then
+write a findings report.
+
+--------------------------------------------------------------------------------
+STEP 0 — READ THESE FIRST, BEFORE RUNNING ANYTHING
+--------------------------------------------------------------------------------
+
+Read, in this order:
+
+  1. docs/eval-v4-report-2026-08-22.md
+        The prior run's report. Read the section "What I could and couldn't
+        run" carefully — it defines exactly what is still missing and which
+        failures were already diagnosed as sandbox artifacts rather than
+        real bugs. Do not re-litigate findings it already settled; your job
+        is to CONFIRM or REFUTE its open items with real data.
+
+  2. tests/eval_cases_v4.yaml
+        The 15 cases: 3 direct per regulation (KVKK/GDPR/DORA), 3 compare,
+        3 scenarios. Each case carries `expected` and `fail_condition` in
+        prose — those are the grading rubric for the answer-quality half,
+        which no regex can check. Read all 15 before running; you will be
+        judging answers against them.
+
+  3. docs/bug-audit-2026-08-22.md
+        The underlying bug audit, including the compare-mode section. Gives
+        you the "why" behind several cases and lists which bugs are fixed
+        versus still open.
+
+Skim, for context on the code under test:
+  regintel/generation/rag.py, regintel/retrieval/store.py,
+  regintel/generation/prompts.py, scripts/eval.py
+
+--------------------------------------------------------------------------------
+STEP 1 — PREFLIGHT
+--------------------------------------------------------------------------------
+
+Work inside the project venv:
+
+    source .venv/bin/activate
+
+Check and report each of these before proceeding. If any fails, STOP and tell
+the user rather than working around it:
+
+  a) REGINTEL_API_KEY is set in the environment.
+     Verify presence ONLY — never print, echo, log, or write the key value
+     anywhere, including into your report.
+
+  b) *** USE THE HOSTED API MODEL ONLY — NEVER A LOCAL ONE ***
+     Every generated answer in this evaluation must come from the
+     OpenRouter-hosted model configured in regintel/config.py. Do NOT start
+     `ollama serve`, do not pull or run a local model, and do not change
+     LLM_PROVIDER. A local run would produce numbers that are not comparable
+     to anything else in this project's eval history, and the prior report
+     you are diffing against assumes the hosted model.
+
+     Confirm the pipeline actually resolves to the API client before you
+     spend anything:
+
+         python - <<'PY'
+         from regintel import config
+         from regintel.generation.llm import get_llm, ApiLLM, OllamaLLM, EchoLLM
+         llm = get_llm()
+         print("LLM_PROVIDER :", config.LLM_PROVIDER)
+         print("API_BASE_URL :", config.API_BASE_URL)
+         print("API_MODEL    :", config.API_MODEL)
+         print("resolved LLM :", type(llm).__name__)
+         assert config.LLM_PROVIDER == "api", "LLM_PROVIDER must be 'api'"
+         assert isinstance(llm, ApiLLM), f"expected ApiLLM, got {type(llm).__name__}"
+         assert not isinstance(llm, (OllamaLLM, EchoLLM)), "a local/echo LLM was resolved"
+         print("OK - hosted API model only")
+         PY
+
+     If LLM_PROVIDER is anything other than "api", STOP and tell the user
+     rather than editing config.py yourself.
+
+     Two silent-failure modes to watch for, because either would make a
+     "live" run secretly not live:
+       - get_llm() falls back to EchoLLM when the provider is not "api" and
+         Ollama is unreachable. An EchoLLM run grades retrieval only, and
+         cases that were never actually answered can still look like passes.
+       - scripts/eval.py's --llm flag carries a stale help string that
+         mentions Ollama. Ignore that wording; the assertion above is what
+         decides. For the live run, pass no --llm flag at all so the
+         configured API client is used.
+
+     Record the resolved class name and config.API_MODEL — both belong in
+     your report.
+
+  c) The test suite is green:
+         python -m pytest tests/ -q
+     Expect 63 passing. If any fail, report which and stop — a red suite
+     means the code under test is not in the state this eval assumes.
+
+  d) *** THE INDEX IS STALE — THIS MATTERS ***
+     A parser fix (transitional "GEÇİCİ MADDE" articles) landed but the KVKK
+     statute has NOT been re-ingested on this machine yet. Before evaluating,
+     run:
+         python scripts/ingest.py KVKK
+     Then confirm the parse picked them up:
+         python -c "import json; a=json.load(open('data/processed/KVKK_articles.json')); print([x['article_number'] for x in a])"
+     You should see 36 articles including 'Geçici 1', 'Geçici 2', 'Geçici 3'.
+     If you do not, stop and report — every KVKK result afterwards would be
+     measured against a stale index.
+
+     While you are here, sanity-check the rest of the index is present:
+         python -c "from regintel.retrieval.store import RegulationStore as R; s=R(); print(s.regulations()); print({r: s.article_range(r) for r in s.regulations()})"
+
+--------------------------------------------------------------------------------
+STEP 2 — RUN A: RETRIEVAL WITH SEMANTIC SEARCH ON (no LLM, no cost)
+--------------------------------------------------------------------------------
+
+    python scripts/eval.py --cases tests/eval_cases_v4.yaml --llm echo
+
+This is the single most informative run you will do, because it isolates ONE
+variable against the prior session's baseline: that run had BM25 only, this
+one adds the embedding half. Any case that flips FAIL -> PASS was failing
+purely because semantic retrieval was missing.
+
+Baseline to diff against (prior session, BM25-only, AFTER its routing fixes):
+
+    K1 FAIL   (missed Kurul Kararı 2018/10)      G3 FAIL  (retrieved NOTHING)
+    K2 PASS                                       D1 PASS
+    K3 PASS                                       D2 PASS
+    G1 PASS                                       D3 PASS
+    G2 PASS                                       C1 PASS
+    C2 FAIL   (missed GDPR Art 33)                C3 SKIP  (needs live LLM)
+    S1 FAIL   (missed KVKK Madde 6)               S3 SKIP  (needs live LLM)
+    S2 FAIL   (missed GDPR Art 33)
+    => 8 pass / 5 fail / 2 skip
+
+Produce an explicit case-by-case diff table: baseline status -> your status.
+
+For every case still failing, do NOT stop at the pass/fail line. Inspect what
+was actually retrieved and say why the required source lost:
+
+    python - <<'PY'
+    from regintel.generation.rag import RagPipeline
+    from regintel.generation.llm import EchoLLM
+    import yaml
+    cases = {c["id"]: c for c in yaml.safe_load(open("tests/eval_cases_v4.yaml"))["cases"]}
+    pipe = RagPipeline(llm=EchoLLM())
+    for cid in ["K1", "C2", "S1", "S2"]:          # adjust to your actual failures
+        c = cases[cid]
+        if c["mode"] == "compare":
+            res, _ = pipe._compare_prompt(c["question"], c["reg_a"], c["reg_b"], 4)
+        else:
+            res, _ = pipe._ask_prompt(c["question"], c.get("regulation"), 8)
+        print(f"--- {cid}")
+        for r in res:
+            m = r.metadata
+            print("   ", m["regulation"], m.get("document_label") or f"Art {m['article_number']}", round(r.score, 4))
+    PY
+
+Note that under --llm echo there is still no query rewrite and no scenario
+decomposition (EchoLLM cannot produce them). So S1/S2/S3 and C2 may still
+fail here for that reason alone — Run B is what settles those.
+
+--------------------------------------------------------------------------------
+STEP 3 — RUN B: THE FULL PIPELINE (live model, real answers)
+--------------------------------------------------------------------------------
+
+    python scripts/eval.py --cases tests/eval_cases_v4.yaml
+
+Run this with NO --llm flag, so the configured hosted API client (ApiLLM,
+config.API_MODEL) is what answers. Do not pass --llm echo here, and do not
+start a local Ollama model as a substitute — see preflight (b). If the API
+call fails (auth, rate limit, network), stop and report it; do not fall back
+to a local model to get the run finished.
+
+This is the run nobody has done yet. It exercises query rewrite, scenario
+decomposition, jurisdiction triage, answer generation, citation grounding and
+source display end to end. Cost is a few cents on OpenRouter.
+
+It writes a full report — every answer with its cited sources — to:
+
+    data/eval_runs/<timestamp>.md
+
+Read that file completely. The automated checks only cover regex-checkable
+surface (a number appearing, citations coming from the allowed instruments,
+absence of a citation footer). The things that actually decide whether this
+system is usable are in the prose, and you have to read for them.
+
+Grade every one of the 15 answers yourself against that case's `expected`
+and `fail_condition` in the YAML. For each, record: PASS / PARTIAL / FAIL,
+and quote the specific sentence from the answer that decided it.
+
+Pay particular attention to these, which are the reasons these cases exist:
+
+  K1  English question, Turkish-only sources. Are there ANY citations in the
+      sources panel? A prior bug stripped every cross-language citation. Zero
+      citations here is a regression, not a refusal.
+  K2  Does it attribute the 72-hour figure to Kurul Kararı 2019/10, or does
+      it wrongly attribute it to KVKK Madde 12 (which says only "en kısa
+      sürede")?
+  K3  Does it describe the post-7499 (2024) transfer regime, or the repealed
+      pre-2024 one?
+  G3  Turkish question, English sources. Is the answer Turkish from first
+      word to last (SYSTEM_PROMPT rule 6), or does it drift into English?
+  D1  Are the 4h / 24h / 72h / 1-month figures attributed to RTS 2025/301,
+      not to DORA Art 19 (which does not contain them) and not to RTS
+      2024/1772 (which is classification criteria, not timelines)?
+  D3  Does it stay in DORA, or does it reach for GDPR Art 30 (a different
+      register, for a different purpose)?
+  C1  Does it distinguish that GDPR's 72 hours is statutory while KVKK's
+      comes from a Board decision — or does it flatten both to "72 hours"?
+  C2  Does it keep the two 72-hour figures apart? They mean different things:
+      GDPR's is the FIRST report; DORA's is the INTERMEDIATE report. Merging
+      them is the failure this case is built to catch.
+  C3  Deliberately lopsided: KVKK has essentially nothing on ICT vendor risk.
+      Does the KVKK column say so, or does it manufacture a counterpart from
+      Madde 12? Also check the rendered table for blank cells and for any
+      citation appearing in the wrong regulation's column.
+  S1  Does it CORRECT the team lead's false premise ("no health data") before
+      answering? Does it catch all three issues (special-category data,
+      transfer to Frankfurt, breach)? Does it notice the 72-hour window is
+      already blown at four days, rather than reciting the deadline as if it
+      were still open?
+  S2  Two regimes, separately labelled — or one merged timeline?
+  S3  All three instruments, presented as CONDITIONAL on jurisdiction (rule
+      15) rather than all unconditionally applying at once? Turkish
+      throughout?
+
+--------------------------------------------------------------------------------
+STEP 4 — TARGETED VERIFICATION OF THE PRIOR SESSION'S OPEN CLAIMS
+--------------------------------------------------------------------------------
+
+The prior report left three items explicitly unresolved. Settle each with
+evidence, not opinion.
+
+  CLAIM 1 — "English questions about KVKK have no lexical retrieval path;
+  they ride entirely on cross-lingual embeddings, with no fallback."
+  Test it: run K1's question and inspect the BM25 and semantic contributions
+  separately. Does the semantic half alone surface Kurul Kararı 2018/10? At
+  what similarity score, and how close is that to MIN_SEMANTIC_SCORE (0.15)?
+  Then try the proposed remedy — translate the query INTO Turkish and pass it
+  as `extra_query` to store.search() — and report whether it materially
+  improves the ranking. Do NOT ship that change; measure it and recommend.
+
+  CLAIM 2 — "Compare mode manufactures false parity: each side's relevance
+  floor is relative to its own best match, so a regulation with nothing
+  on-topic still returns a full, confident-looking quota."
+  Test it: C3 is the designed probe. Inspect what the KVKK side returns and
+  whether any of it genuinely addresses ICT third-party oversight. Then read
+  what the model did with it. Report whether the hardened COMPARE_TEMPLATE
+  wording is actually enough to make it decline.
+
+  CLAIM 3 — "The newly-parsed Geçici articles add retrieval noise."
+  Test it: do 'Geçici 1' / 'Geçici 2' appear in top-k for scenarios where
+  they are irrelevant (S1 especially)? Also check their parsed titles —
+  'Geçici 2' was observed titled "Başbakanlık tarafından yerine getirilir.",
+  a fragment of the preceding line, which suggests the title-recovery
+  heuristic in parser.py mis-fires on these. Confirm and characterise.
+
+--------------------------------------------------------------------------------
+STEP 5 — REGRESSION CONTEXT (optional but useful)
+--------------------------------------------------------------------------------
+
+Six rounds of code changes landed today. Confirm the original case set did
+not regress:
+
+    python scripts/eval.py --cases tests/eval_cases.yaml --llm echo
+
+Compare against data/eval_runs/ history. Report any case that got worse; a
+case that got BETTER is also worth naming.
+
+--------------------------------------------------------------------------------
+STEP 6 — WRITE THE REPORT
+--------------------------------------------------------------------------------
+
+Write to:
+
+    docs/eval-v4-live-run-<YYYY-MM-DD>.md
+
+Structure it as:
+
+  1. What ran, and on what — the resolved LLM class and config.API_MODEL,
+     stated explicitly as "hosted API model, no local model involved";
+     whether semantic search was active; index state (confirm the KVKK
+     re-ingest happened); test-suite status.
+  2. Run A vs baseline: the case-by-case diff table, and a one-line verdict
+     on how much of the prior run's failure list was purely the missing
+     embedding half.
+  3. Run B scorecard: automated checks, then YOUR per-case grade with the
+     deciding quote from each answer.
+  4. Findings, ranked by severity. For each: what you observed (with the
+     quote or the retrieved-source list), why it happens (point at the
+     specific function), and what you would change. Separate genuine bugs
+     from tuning opportunities from acceptable behaviour.
+  5. The three open claims from Step 4: CONFIRMED / REFUTED / PARTIAL, each
+     with its evidence.
+  6. Recommended next actions, ordered by (impact / effort).
+
+Also append a short "Live run — <date>" section to
+docs/eval-v4-report-2026-08-22.md pointing at your new report, so the two
+stay linked.
+
+--------------------------------------------------------------------------------
+RULES
+--------------------------------------------------------------------------------
+
+  * Never print, echo, or write REGINTEL_API_KEY, or paste it into any file.
+  * Use ONLY the hosted API model (LLM_PROVIDER = "api" -> ApiLLM). Never
+    start, install, or fall back to a local Ollama model, and never edit
+    LLM_PROVIDER to make a run succeed. If the API client is unusable for
+    any reason, STOP and report it — a local-model substitute would silently
+    invalidate every comparison in this report.
+  * Do NOT weaken a case, loosen a check, or edit tests/eval_cases_v4.yaml to
+    make something pass. The ground truth in that file was verified against
+    data/raw/ directly. If a case fails, that IS the finding — report it.
+  * Do not "fix" code mid-run. Finish measuring first; propose changes in the
+    report. The one exception is a hard blocker that prevents the eval from
+    running at all — if you hit one, fix the minimum, say so explicitly in
+    the report, and re-run from the start so all numbers come from one
+    consistent build.
+  * If you do change code afterwards, run `python -m pytest tests/ -q` and
+    keep all 63 green.
+  * Quote real output. Do not paraphrase an answer you are grading, and do
+    not report a number you did not observe.
+  * If something cannot run on this machine either, say so plainly and state
+    what it would take — do not silently drop it.
+  * The eval is non-deterministic in principle (LLM_TEMPERATURE=0.0 and a
+    fixed seed reduce but do not eliminate drift). If a result looks like a
+    coin-flip, re-run that single case with `--case <ID>` and say whether it
+    reproduced.
+
+================================================================================

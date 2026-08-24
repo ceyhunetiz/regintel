@@ -1,0 +1,176 @@
+{
+  "description": "Gold evaluation set for RegIntel. Each item has a question and the article(s) that actually contain the answer, used to measure retrieval accuracy. 'expected_articles' lists article numbers considered correct hits for that regulation. Extend this set with real questions from your compliance team.",
+  "items": [
+    {
+      "id": "dora-01",
+      "regulation": "DORA",
+      "difficulty": "easy",
+      "language": "en",
+      "question": "Within what timeframe must a major ICT-related incident be reported to the competent authority?",
+      "expected_articles": ["19"],
+      "notes": "Reporting of major ICT-related incidents."
+    },
+    {
+      "id": "dora-02",
+      "regulation": "DORA",
+      "difficulty": "easy",
+      "language": "en",
+      "question": "How are ICT-related incidents classified as major?",
+      "expected_articles": ["18"],
+      "notes": "Classification of ICT-related incidents and cyber threats."
+    },
+    {
+      "id": "dora-03",
+      "regulation": "DORA",
+      "difficulty": "medium",
+      "language": "en",
+      "question": "What key contractual provisions must be included in agreements with ICT third-party service providers?",
+      "expected_articles": ["30"],
+      "notes": "Key contractual provisions."
+    },
+    {
+      "id": "dora-04",
+      "regulation": "DORA",
+      "difficulty": "medium",
+      "language": "en",
+      "question": "What must the register of information on contractual arrangements with ICT third-party providers contain?",
+      "expected_articles": ["28"],
+      "notes": "General principles / register of information."
+    },
+    {
+      "id": "dora-05",
+      "regulation": "DORA",
+      "difficulty": "medium",
+      "language": "en",
+      "question": "What is threat-led penetration testing and who must perform it?",
+      "expected_articles": ["26", "27"],
+      "notes": "Advanced testing of ICT tools based on TLPT."
+    },
+    {
+      "id": "dora-06",
+      "regulation": "DORA",
+      "difficulty": "easy",
+      "language": "en",
+      "question": "Who holds ultimate responsibility for managing ICT risk within a financial entity?",
+      "expected_articles": ["5"],
+      "notes": "Governance and organisation — management body responsibility."
+    },
+    {
+      "id": "dora-07",
+      "regulation": "DORA",
+      "difficulty": "hard",
+      "language": "tr",
+      "question": "Bir bankanın SOC hizmeti bağlı bir grup şirketi tarafından sağlanıyorsa, ICT üçüncü taraf riski açısından hangi yükümlülükler geçerlidir?",
+      "expected_articles": ["28", "29", "30"],
+      "notes": "Intra-group ICT third-party arrangements. Turkish question against English index — tests query rewriting."
+    },
+    {
+      "id": "dora-08",
+      "regulation": "DORA",
+      "difficulty": "medium",
+      "language": "tr",
+      "question": "Büyük bir ICT olayı yetkili otoriteye ne kadar sürede raporlanmalıdır?",
+      "expected_articles": ["19"],
+      "notes": "Turkish version of dora-01."
+    },
+    {
+      "id": "gdpr-01",
+      "regulation": "GDPR",
+      "difficulty": "easy",
+      "language": "en",
+      "question": "Within how many hours must a personal data breach be notified to the supervisory authority?",
+      "expected_articles": ["33"],
+      "notes": "Notification of a personal data breach to the supervisory authority (72 hours)."
+    },
+    {
+      "id": "gdpr-02",
+      "regulation": "GDPR",
+      "difficulty": "medium",
+      "language": "en",
+      "question": "When is a data protection impact assessment required?",
+      "expected_articles": ["35"],
+      "notes": "Data protection impact assessment."
+    },
+    {
+      "id": "gdpr-03",
+      "regulation": "GDPR",
+      "difficulty": "easy",
+      "language": "en",
+      "question": "What rights does a data subject have to access their personal data?",
+      "expected_articles": ["15"],
+      "notes": "Right of access by the data subject."
+    },
+    {
+      "id": "gdpr-04",
+      "regulation": "GDPR",
+      "difficulty": "medium",
+      "language": "en",
+      "question": "What technical and organisational measures are required to secure personal data processing?",
+      "expected_articles": ["32"],
+      "notes": "Security of processing."
+    },
+    {
+      "id": "gdpr-05",
+      "regulation": "GDPR",
+      "difficulty": "easy",
+      "language": "en",
+      "question": "When must a Data Protection Officer be appointed?",
+      "expected_articles": ["37"],
+      "notes": "Designation of the data protection officer."
+    },
+    {
+      "id": "gdpr-06",
+      "regulation": "GDPR",
+      "difficulty": "medium",
+      "language": "en",
+      "question": "What is the right to erasure and when does it apply?",
+      "expected_articles": ["17"],
+      "notes": "Right to erasure ('right to be forgotten')."
+    },
+    {
+      "id": "kvkk-01",
+      "regulation": "KVKK",
+      "difficulty": "easy",
+      "language": "tr",
+      "question": "Veri sorumlusunun veri güvenliğine ilişkin yükümlülükleri nelerdir?",
+      "expected_articles": ["12"],
+      "notes": "Veri güvenliğine ilişkin yükümlülükler."
+    },
+    {
+      "id": "kvkk-02",
+      "regulation": "KVKK",
+      "difficulty": "easy",
+      "language": "tr",
+      "question": "Kişisel verilerin işlenme şartları nelerdir?",
+      "expected_articles": ["5"],
+      "notes": "Kişisel verilerin işlenme şartları."
+    },
+    {
+      "id": "kvkk-03",
+      "regulation": "KVKK",
+      "difficulty": "medium",
+      "language": "tr",
+      "question": "Özel nitelikli kişisel veriler nasıl işlenebilir?",
+      "expected_articles": ["6"],
+      "notes": "Özel nitelikli kişisel verilerin işlenme şartları."
+    },
+    {
+      "id": "kvkk-04",
+      "regulation": "KVKK",
+      "difficulty": "easy",
+      "language": "tr",
+      "question": "İlgili kişinin hakları nelerdir?",
+      "expected_articles": ["11"],
+      "notes": "İlgili kişinin hakları."
+    },
+    {
+      "id": "kvkk-05",
+      "regulation": "KVKK",
+      "difficulty": "medium",
+      "language": "tr",
+      "question": "Kişisel verilerin silinmesi, yok edilmesi veya anonim hale getirilmesi ne zaman gerekir?",
+      "expected_articles": ["7"],
+      "notes": "Kişisel verilerin silinmesi, yok edilmesi veya anonim hale getirilmesi."
+    }
+  ]
+}

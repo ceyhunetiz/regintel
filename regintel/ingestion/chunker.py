@@ -34,7 +34,14 @@ def chunk_article(article: Article,
     # documents (Board decisions, guidelines) use their document_label —
     # "Article N" would be actively wrong for those.
     if is_statute:
-        id_prefix = f"{article.regulation}-art{article.article_number}"
+        # Slugify for the id only ("Geçici 3" -> "Gecici-3"): plain
+        # numeric/alphanumeric article numbers pass through unchanged, so
+        # existing statute chunk ids stay byte-identical across
+        # re-ingests.
+        num_slug = re.sub(r"[^0-9A-Za-z]+", "-",
+                          article.article_number.replace("ç", "c").replace("Ç", "C")
+                          .replace("ı", "i").replace("İ", "I")).strip("-")
+        id_prefix = f"{article.regulation}-art{num_slug}"
         label = f"Article {article.article_number}"
         if article.article_title:
             label += f" — {article.article_title}"
@@ -77,11 +84,66 @@ def chunk_articles(articles: list[Article]) -> list[Chunk]:
     return out
 
 
+# EU-legislative articles number their top-level paragraphs on their own
+# line ("1.\xa0\xa0\xa0As part of..."), with lettered sub-items ("(a)")
+# and their content each split across separate lines too. A numbered
+# top-level paragraph is an independently citable provision.
+_NUMBERED_PARA_RE = re.compile(r"^\d{1,2}[.\xa0]")
+
+
 def _split_text(text: str, max_chars: int, overlap: int) -> list[str]:
     if len(text) <= max_chars:
         return [text] if text else []
 
-    paragraphs = [p for p in text.split("\n") if p.strip()]
+    lines = [p for p in text.split("\n") if p.strip()]
+
+    if any(_NUMBERED_PARA_RE.match(l) for l in lines):
+        return _split_by_numbered_paragraphs(lines, max_chars, overlap)
+    return _pack_paragraphs(lines, max_chars, overlap)
+
+
+def _split_by_numbered_paragraphs(lines: list[str], max_chars: int,
+                                  overlap: int) -> list[str]:
+    """One chunk per numbered top-level paragraph, never packing several
+    together into a shared character budget (unlike _pack_paragraphs
+    below). A lettered sub-item line ("(a)") and its content line merge
+    into the numbered paragraph they belong to rather than starting a
+    new unit.
+
+    Packing multiple numbered paragraphs together by character count
+    alone diluted a short, specific provision's retrieval signal with
+    its neighbours' unrelated vocabulary — observed directly: DORA
+    Art 11(10)'s "financial entities... shall report... upon [the
+    competent authority's] request an estimation of aggregated annual
+    costs and losses" sat in a chunk shared with earlier paragraphs
+    about business-continuity test result copies, and failed to surface
+    in the top 8 results even for a query using its own exact wording.
+    One paragraph per chunk keeps each provision's own vocabulary as
+    the chunk's dominant signal.
+    """
+    units: list[str] = []
+    for line in lines:
+        if _NUMBERED_PARA_RE.match(line) or not units:
+            units.append(line)
+        else:
+            units[-1] = units[-1] + "\n" + line
+
+    pieces: list[str] = []
+    for unit in units:
+        while len(unit) > max_chars:
+            cut = unit.rfind(". ", 0, max_chars)
+            cut = cut + 1 if cut > max_chars // 2 else max_chars
+            pieces.append(unit[:cut].strip())
+            unit = unit[max(cut - overlap, 0):].strip()
+        if unit:
+            pieces.append(unit)
+    return pieces
+
+
+def _pack_paragraphs(paragraphs: list[str], max_chars: int,
+                     overlap: int) -> list[str]:
+    """General-purpose strategy for text with no numbered-paragraph
+    structure: greedily pack lines up to a character budget."""
     pieces: list[str] = []
     current = ""
 

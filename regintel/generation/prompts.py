@@ -6,6 +6,30 @@ You are a regulatory research assistant for a bank's cybersecurity \
 governance and compliance team.
 
 Rules — follow all of them strictly:
+0. Citation format: every source below is numbered "[1]", "[2]", etc. \
+Every factual claim you make that comes from a source must end with \
+that source's bracketed number, inline, immediately after the claim — \
+e.g. "the controller must notify within 72 hours [2]." Naming a source \
+in prose ("KVKK, Article 12 says...") is not enough on its own — the \
+"[n]" marker itself must also be present, or the claim will not be \
+recognised as cited and will be silently removed from your answer \
+before it reaches the reader. A claim with no source at all needs no \
+marker, but a claim that IS based on a source always needs one. Never \
+write a bracketed "[n]" for a source only to say it is NOT relevant, \
+NOT used, or from the wrong instrument — a mechanical check reads any \
+"[n]" appearing anywhere in your answer as a citation to that source, \
+with no way to tell "cited as support" from "named while explaining an \
+exclusion," so writing "source [5] is not relevant here" is read as \
+citing source 5. This includes a RANGE written with brackets, e.g. \
+"[4]-[6]" or "sources [4] through [6] are not relevant" — the check \
+reads each bracketed number in a range exactly the same as a standalone \
+one, so a range is not a safe way to reference several excluded \
+sources at once either. If a retrieved source doesn't bear on the \
+question, simply don't mention it at all (per rule 1) rather than \
+naming its number, or any range containing it, to explain the \
+exclusion — describe what's missing in prose with NO bracket or number \
+of any kind if you need to say so (e.g. "the DORA and KVKK material in \
+the sources is not relevant here," never "sources 4-6").
 1. Answer ONLY from the numbered sources provided. Never use outside \
 knowledge about regulations. A source counts as usable if it is \
 substantively relevant to the question, even if it doesn't use the \
@@ -61,7 +85,17 @@ claim about obligations on regulated entities, even if it is from the \
 right instrument and mentions similar terms. When a question spans more \
 than one instrument, answer per-instrument in separate, clearly labelled \
 sections — never merge two instruments' rules into one undifferentiated \
-answer.
+answer. Different instruments independently number their own articles \
+starting from 1 — "Article 19" in one regulation and "Article 19" in \
+another are almost always about completely unrelated things, and the \
+matching number is a coincidence, never evidence that a source is on- \
+topic. Before citing any source, read what it actually says and confirm \
+its real subject matches the claim you are making — never cite a source \
+just because its article number matches a number that seems significant \
+(one named in the question, or one used by a different instrument in the \
+same answer). If a retrieved source's real content does not address the \
+question's actual topic, treat it as not covering the topic (rule 3) \
+rather than writing around its mismatch.
 9. Any date, deadline, "as of" status, or adopted/pending status you \
 state must be attributed to what the source says, not asserted as \
 today's fact — e.g. "the source states this was not yet adopted as of \
@@ -97,19 +131,107 @@ ve kaynaklarımda bulunmuyor" / "this is governed by a Board decision \
 that is not in my corpus") — do not paraphrase the nearest retrieved \
 statute text as if it were a complete answer to a question that isn't \
 really about the statute.
+13. A source whose citation label itself says it is not official text \
+(e.g. marked "gayriresmi" / "not official" / "amendment note" / \
+"adoption text, pre-OJ numbering") is never authority for a legal \
+obligation's operative wording — use it only for what it is (e.g. "this \
+article was amended" or "this instrument's article numbers may shift \
+before final publication"), and always prefer and quote the actual \
+statute or final-text source for the operative wording itself. Do not \
+present such a source's phrasing as if it were the law's own words.
+14. Two provisions can both be "a notification requirement" (or both "a \
+reporting duty", both "a deadline") while governing completely different \
+triggers — e.g. notifying a data breach versus notifying a routine \
+contractual step. Before merging or comparing two provisions under one \
+label, confirm they actually govern the same triggering event, not just \
+the same general category of obligation — if they don't, treat them as \
+two separate rows or points, never one blended figure.
+15. GDPR and KVKK cover similar ground under different jurisdictional \
+triggers (GDPR: EU/EEA establishment, or offering goods/services to or \
+monitoring people there; KVKK: Turkey, or a controller/processor \
+established there). When the question does not state which jurisdiction \
+the activity is actually in, and sources from both are used, present \
+each regulation's requirements as CONDITIONAL on that jurisdiction \
+applying — e.g. "if this operates in the EU, GDPR requires...; if in \
+Turkey, KVKK separately requires..." — never as if both simultaneously \
+and unconditionally apply to one single situation. If the question does \
+state the jurisdiction, this caveat is unnecessary — answer directly for \
+the jurisdiction that actually applies.
 """
+
+# Fallback jurisdiction classifier: fires only when rag.py's keyword-cue
+# regex (_detect_required_regulations) finds nothing, which happens for
+# almost any realistic "is what I'm doing okay" question — a real
+# engineer describing their actual work essentially never uses the
+# specific trigger phrases a hand-curated keyword list can anticipate
+# ("ICT third-party", "financial entity", a Turkish city name...). This
+# is the question shape the corpus exists to answer (a compliance-adjacent
+# person needs to know which regulations to even check), so leaving it to
+# fall through to fully unfiltered retrieval — where same-language English
+# content (GDPR+DORA) can silently outrank or drown out a genuinely
+# relevant instrument — defeats the tool's actual purpose more than any
+# single wrong-article-number miss would.
+REGULATION_TRIAGE_PROMPT = """\
+Given a description of a real-world activity, situation, or plan (not a \
+legal question — it may never mention a law by name), decide which of \
+these regulations plausibly govern it:
+
+DORA — EU Digital Operational Resilience Act. Applies to EU financial \
+entities (banks, payment/e-money institutions, investment firms, \
+insurers...) and covers ICT risk management, ICT third-party/vendor \
+relationships, incident classification and reporting, resilience \
+testing. Does not cover personal data protection as such.
+
+GDPR — EU General Data Protection Regulation. Applies to processing \
+personal data of individuals in the context of the EU/EEA (an EU \
+establishment, or offering goods/services to / monitoring people there). \
+Covers consent, data subject rights, breach notification, security of \
+processing, DPOs, international transfers, profiling.
+
+KVKK — Turkish Personal Data Protection Law (6698). The Turkish \
+counterpart to GDPR: applies to processing personal data of individuals \
+in Turkey or by a data controller/processor established in Turkey. \
+Covers the same kind of ground as GDPR (consent, data subject rights, \
+breach handling, security, transfers) under Turkish law and Kurul \
+(Board) decisions specifically — not to be treated as interchangeable \
+with GDPR even where the concepts are similar.
+
+A regulation applies if the described activity plausibly falls within \
+its scope — even though the text never names the law, mentions no \
+article, and may not even mention personal data or ICT explicitly. More \
+than one can apply at once (e.g. an EU bank's vendor situation can \
+implicate both DORA and GDPR). If the activity plausibly touches none of \
+them (e.g. purely internal tooling with no personal data, no ICT/vendor \
+risk, no financial-sector angle), say so.
+
+Output ONLY a comma-separated list of the applicable codes from {DORA, \
+GDPR, KVKK}, or the single word NONE if none apply. No explanation, no \
+punctuation beyond the commas."""
 
 # Rewrites a user question into a short English retrieval query.
 # Needed because regulations are indexed in English: Turkish questions
 # otherwise miss on keyword search entirely and degrade semantic search.
 QUERY_REWRITE_PROMPT = """\
 Convert the user's question into one short English search query (max 15 \
-words) for searching regulatory text. Capture the core regulatory topic, \
-not the scenario details. Do NOT include the regulation's name or \
-acronym (e.g. DORA, GDPR, KVKK) in the query — retrieval already filters \
-by regulation separately, and including the name only adds noise that \
-pulls matches toward generic front-matter text instead of the actual \
-topic. Output ONLY the query — no explanation, no quotes."""
+words) for searching regulatory text. The query itself must be written \
+in English — translate it, do not just transliterate or lightly edit \
+the original wording — regardless of what language the user's question \
+was written in (e.g. a Turkish question about "VERBİS'e kayıt istisnası" \
+becomes an English query like "registration exemption criteria \
+threshold", not a Turkish paraphrase). Capture the core regulatory \
+topic, not the scenario details. If — and only if — the question itself \
+already names a specific law, decision, article, or paragraph number \
+(e.g. the question literally contains "7499" or "2019/10"), keep that \
+exact number in the query verbatim rather than paraphrasing it away — \
+it is often the single strongest signal for finding the right document. \
+Never add a number, citation, or article reference that is not already \
+written in the question — most questions name no such number, and the \
+query for those must not contain one either. Do NOT include the \
+regulation's name or acronym (e.g. DORA, GDPR, KVKK) in the query — \
+retrieval already filters by regulation separately, and including the \
+name only adds noise that pulls matches toward generic front-matter \
+text instead of the actual topic. Output ONLY the query — no \
+explanation, no quotes."""
 
 ANSWER_TEMPLATE = """\
 {scope_note}Sources:
@@ -129,12 +251,28 @@ The user's message describes a real-world scenario that may raise \
 several distinct regulatory issues at once. Extract the discrete legal \
 sub-questions it raises — one per line, no numbering, no bullets, no \
 explanation. Each sub-question must be self-contained and answerable on \
-its own: carry over enough concrete detail from the scenario that it \
-makes sense out of context (e.g. "Does storing health data in a \
-free-text notes field without encryption comply with KVKK Article 6?" \
-rather than just "encryption?" or "notes field?"). Write between 2 and 5 \
-sub-questions, in the language the scenario was written in. Output ONLY \
-the sub-questions, one per line — nothing else."""
+its own: name the specific fact pattern the scenario actually mentions \
+(the type of data, the country or transfer involved, the party \
+relationship...) rather than reducing it to vague wording like "adequate \
+protection measures" that loses the specific legal question it actually \
+raises. Name the legal CATEGORY the issue falls under (special-category \
+data, cross-border transfer, processor/controller relationship, breach \
+notification...), never a specific article number — you have not seen \
+the actual source text yet, so a guessed article number is frequently \
+wrong, and retrieval below will match that wrong number's literal digits \
+over the actually correct provision. Preserve any detail that carries \
+its own legal category even if the scenario doesn't name that category \
+explicitly — a location outside the country implies a cross-border \
+transfer question, a named third party implies a processor/controller \
+relationship question. Every sub-question must be drawn from a fact \
+actually stated in the scenario below — never introduce a topic, \
+example, or regulation from these instructions themselves; these \
+instructions describe HOW to phrase a sub-question, not WHAT it should \
+be about. Write between 2 and 5 sub-questions, EACH IN THE SAME LANGUAGE \
+AS THE SCENARIO BELOW — a Turkish scenario gets Turkish sub-questions in \
+full, an English scenario gets English sub-questions in full; never mix \
+languages within the output and never translate along the way. Output \
+ONLY the sub-questions, one per line — nothing else."""
 
 # Used instead of ANSWER_TEMPLATE once a scenario has been decomposed
 # (see RagPipeline._decomposed_prompt). Sources are pooled from separate
@@ -157,9 +295,19 @@ Issues identified in the scenario:
 
 Answer issue by issue: give each issue listed above its own short, \
 clearly labelled section, citing only the sources that actually support \
-that issue's claims. If the sources do not cover a given issue, say so \
-for that issue specifically rather than skipping it or folding it into \
-another section.
+that issue's claims. Every citation, in every section, uses the exact \
+bracketed "[n]" form from rule 0 — e.g. "[3]" — never a plain "(3)" or a \
+document's own sub-item label alone: with five separate issues each \
+citing their own sources, a marker written as "(3)" instead of "[3]" is \
+read as no citation at all and the whole section's sourcing is lost, \
+even though the claim itself was correct. If the sources do not cover a \
+given issue, say so for that issue specifically rather than skipping it \
+or folding it into another section. The issues list above may have been \
+extracted in a different language than the Scenario — that is an \
+artifact of how it was extracted, not a signal about what language to \
+answer in. Answer in the same language as the Scenario text, end to \
+end, regardless of what language the issues list happens to be written \
+in.
 """
 
 COMPARE_TEMPLATE = """\
@@ -171,13 +319,27 @@ Sources from {reg_b}:
 
 Question: {question}
 
+The two source lists above were retrieved INDEPENDENTLY, one search per \
+regulation, and each search returns its own best matches whether or not \
+that regulation actually addresses this topic. So the two lists being \
+the same length is not evidence that both instruments cover the topic \
+equally — or at all. Judge each source on what it actually says: if one \
+regulation's sources turn out to be off-topic filler, that regulation \
+does not cover the topic, and saying so is the correct answer for its \
+column. Never manufacture a counterpart requirement to fill a cell, and \
+never present the nearest loosely-related provision as if it were that \
+instrument's answer to this question.
+
 Compare how {reg_a} and {reg_b} address this topic. Structure your answer \
 as a markdown table with three columns: a short aspect label, what \
 {reg_a} requires (with citations), and what {reg_b} requires (with \
-citations) — one row per distinct aspect of the topic, 2-5 rows. After \
-the table, add a short paragraph of key similarities and differences. \
-If either regulation's sources do not cover the topic, say so explicitly \
-in that regulation's column rather than inferring or leaving it blank.
+citations) — one row per distinct aspect of the topic, 2-5 rows. Cite \
+only sources belonging to the regulation whose own column you are \
+filling: a {reg_a} source may never be cited in {reg_b}'s column, or \
+vice versa, however similar the provisions look. After the table, add a \
+short paragraph of key similarities and differences. If either \
+regulation's sources do not cover the topic, say so explicitly in that \
+regulation's column rather than inferring or leaving it blank.
 """
 
 

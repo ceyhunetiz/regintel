@@ -1,0 +1,81 @@
+{
+  "cases": [
+    {
+      "id": "p0-1", "category": "retrieval_reach",
+      "mode": "ask", "regulation": "KVKK",
+      "question": "What are the conditions for processing personal data without explicit consent under KVKK?",
+      "must_retrieve_articles": [{"regulation": "KVKK", "article": "5"}]
+    },
+    {
+      "id": "p0-2", "category": "retrieval_reach",
+      "mode": "ask", "regulation": "KVKK",
+      "question": "Who must register with VERBIS?",
+      "must_retrieve_articles": [{"regulation": "KVKK", "article": "16"}]
+    },
+    {
+      "id": "p0-3", "category": "retrieval_reach",
+      "mode": "ask", "regulation": "KVKK",
+      "question": "What must a controller do after a personal data breach under KVKK?",
+      "must_retrieve_articles": [{"regulation": "KVKK", "article": "12"}],
+      "answer_not_contains_any": ["72 hour", "72-hour", "seventy-two hour"]
+    },
+    {
+      "id": "p0-4", "category": "retrieval_reach",
+      "mode": "ask", "regulation": "KVKK",
+      "question": "What are the data subject's rights under KVKK?",
+      "must_retrieve_articles": [{"regulation": "KVKK", "article": "11"}]
+    },
+    {
+      "id": "p1-5", "category": "jurisdiction_integrity",
+      "mode": "ask", "regulation": null,
+      "question": "Under KVKK, what is our legitimate interest basis for processing?",
+      "must_retrieve_articles": [{"regulation": "KVKK", "article": "5"}],
+      "citations_from_only": ["KVKK"]
+    },
+    {
+      "id": "p1-6", "category": "jurisdiction_integrity",
+      "mode": "ask", "regulation": null,
+      "question": "Who is our KVKK Data Protection Officer?",
+      "citations_from_only": ["KVKK"],
+      "answer_not_contains_any": ["Art. 38", "Art. 39", "Article 38", "Article 39"]
+    },
+    {
+      "id": "p1-7", "category": "jurisdiction_integrity",
+      "mode": "compare", "reg_a": "DORA", "reg_b": "KVKK",
+      "question": "How does the KVKK breach timeline compare to DORA's?",
+      "citations_from_only": ["DORA", "KVKK"]
+    },
+    {
+      "id": "p4-8", "category": "hallucination_false_negative",
+      "mode": "ask", "regulation": "KVKK",
+      "question": "What does KVKK Article 47 require?",
+      "zero_citations": true,
+      "answer_contains_any": ["does not exist", "no article 47", "yok", "33"]
+    },
+    {
+      "id": "p4-9", "category": "false_premise",
+      "mode": "ask", "regulation": "KVKK",
+      "question": "Summarise the 2025 KVKK amendment.",
+      "answer_contains_any": ["no", "not", "doesn't", "does not", "premise"]
+    },
+    {
+      "id": "p4-10", "category": "hallucination_false_negative",
+      "mode": "ask", "regulation": "DORA",
+      "question": "Summarise DORA Article 72.",
+      "zero_citations": true,
+      "answer_contains_any": ["does not exist", "no article 72", "64 article", "64 provisions"]
+    },
+    {
+      "id": "p4-11", "category": "hallucination_false_positive",
+      "mode": "ask", "regulation": "DORA",
+      "question": "What does DORA Article 45 say?",
+      "answer_not_contains_any": ["does not exist", "no article 45", "no such article"]
+    },
+    {
+      "id": "dora-14", "category": "dora_no_regress",
+      "mode": "ask", "regulation": "DORA",
+      "question": "A Turkish cloud provider serves a German bank. What DORA obligations attach regarding contractual requirements?",
+      "must_retrieve_articles": [{"regulation": "DORA", "article": "30"}]
+    }
+  ]
+}

@@ -30,7 +30,7 @@ class _FakeLLM(LLM):
     def __init__(self, decomposition: str):
         self.decomposition = decomposition
 
-    def chat(self, system: str, user: str) -> str:
+    def chat(self, system: str, user: str, reasoning: bool = False) -> str:
         if system == prompts.DECOMPOSE_PROMPT:
             return self.decomposition
         return user
@@ -209,6 +209,93 @@ def test_parse_decision_text_disambiguates_repeated_letters_under_numbered_group
     assert len(ids) == len(set(ids))
 
 
+# Mirrors a real document (KVKK Kurul Kararı 2019/271): two flat
+# lettered lists with NO numbered top-level item above either — one
+# quoting the statute's a)/b)/c) items, then a separate operative
+# a)/b)/c)/ç)/d) list further down. current_num never fires here, so a
+# bare-letter label alone would collide *between* the two lists, not
+# just within one — a different collision class than the nested-decision
+# case above.
+MOCK_FLAT_RESTART_DECISION = """
+Kanunun ilgili maddesi uyarınca veri sorumlusu:
+a) İlk yükümlülüğü yerine getirir.
+b) İkinci yükümlülüğü yerine getirir.
+c) Üçüncü yükümlülüğü yerine getirir.
+
+Kurul, bildirimde asgari olarak şu unsurların bulunmasına karar vermiştir:
+a) İhlalin ne zaman gerçekleştiği.
+b) Etkilenen veri kategorileri.
+c) İhlalin olası sonuçları.
+ç) Alınan tedbirler.
+"""
+
+
+def test_parse_decision_text_disambiguates_restarting_flat_letter_lists():
+    articles = parse_decision_text(
+        MOCK_FLAT_RESTART_DECISION, "MOCK-DEC", document_label="Kurul Kararı 2099/3")
+    labels = [a.article_number for a in articles]
+    assert len(labels) == len(set(labels)), "restarting flat letter lists collided"
+    # First list keeps plain labels (backward compatible with single-list
+    # documents); the second, real operative list gets a synthetic prefix
+    # rather than silently overwriting the first list's chunks.
+    assert labels == ["a", "b", "c", "g1a", "g1b", "g1c", "g1ç"]
+    operative_item1 = next(a for a in articles if a.article_number == "g1a")
+    assert "İhlalin ne zaman" in operative_item1.text
+    # And the first list's content must survive too, not be overwritten.
+    quoted_item1 = next(a for a in articles if a.article_number == "a")
+    assert "İlk yükümlülüğü" in quoted_item1.text
+
+
+# Mirrors a real document (an EIOPA opinion): a numbered section heading
+# ("2. DESCRIPTION OF THE ISSUE") and an independently, sequentially
+# numbered point ("2. Where EIOPA considers...") both legitimately using
+# the digit "2" — unlike lettered sub-items, a repeated *numeric*
+# top-level label is never a valid domain restart, so it must always be
+# disambiguated, never silently overwritten.
+MOCK_NUMBERED_HEADING_COLLISION = """
+1. LEGAL BASIS
+
+1. The Authority provides this account based on its founding regulation.
+2. Where the Authority considers an issue significant, it reports it.
+
+2. DESCRIPTION OF THE ISSUE
+
+3. Certain undertakings are excluded from scope due to their size.
+"""
+
+
+def test_parse_decision_text_disambiguates_repeated_numeric_labels():
+    articles = parse_decision_text(
+        MOCK_NUMBERED_HEADING_COLLISION, "MOCK-DEC", document_label="Opinion 2099/1")
+    labels = [a.article_number for a in articles]
+    assert len(labels) == len(set(labels)), "repeated numeric heading/point labels collided"
+    assert labels == ["1", "1-2", "2", "2-2", "3"]
+    point1 = next(a for a in articles if a.article_number == "1-2")
+    assert "The Authority provides" in point1.text
+    heading2 = next(a for a in articles if a.article_number == "2-2")
+    assert "DESCRIPTION OF THE ISSUE" in heading2.text
+    point3 = next(a for a in articles if a.article_number == "3")
+    assert "excluded from scope" in point3.text
+
+
+def test_parse_plain_text_tags_non_statute_document():
+    """An EU Level-2 RTS shares 'Article N' heading style with the base
+    regulation but must never be mistaken for its statute text — the
+    article numbers would otherwise collide (base DORA also has its own
+    Article 1, 2, 3...)."""
+    text = "Article 1\nScope of this Regulation.\n\nArticle 2\nDefinitions apply."
+    articles = parse_plain_text(
+        text, "MOCK-REG", doc_type="rts", document_label="Mock RTS 2099/1")
+    assert len(articles) == 2
+    assert all(a.doc_type == "rts" for a in articles)
+    assert all(a.document_label == "Mock RTS 2099/1" for a in articles)
+
+    chunks = chunk_articles(articles)
+    assert all("MOCK-REG-art" not in c.id for c in chunks), (
+        "non-statute chunk ids must not use the statute id format, or they "
+        "would collide with the base regulation's own Article 1/2 chunks")
+
+
 def test_decision_chunk_citation_uses_document_label(store):
     articles = parse_decision_text(
         MOCK_DECISION, "MOCK-DEC", document_label="Kurul Kararı 2099/1")
@@ -245,6 +332,35 @@ def test_clear_document_does_not_touch_sibling_statute():
               for _, m in remaining.values()), "statute chunks were wiped too"
 
 
+def test_clear_regulation_does_not_touch_sibling_documents():
+    """clear_regulation() — used before re-ingesting a statute after a
+    parsing change — must only remove the statute's own chunks, not
+    Board decisions/RTS/guidelines sharing the same regulation id. A
+    routine `python scripts/ingest.py <regulation>` re-ingest calls only
+    this, never re-adding non-statute documents, so a blanket delete
+    here silently drops them from the index with no re-add and no
+    warning (observed live: a KVKK re-ingest deleted all six KVKK Board
+    decisions/guidelines)."""
+    tmp = tempfile.mkdtemp()
+    s = RegulationStore(persist_dir=tmp, use_embeddings=False)
+
+    statute_articles = parse_plain_text(MOCK_REG_A, "MOCK-A")
+    s.add_chunks(chunk_articles(statute_articles))
+
+    decision_articles = parse_decision_text(
+        MOCK_DECISION, "MOCK-A", document_label="Kurul Kararı 2099/1")
+    s.add_chunks(chunk_articles(decision_articles))
+
+    s.clear_regulation("MOCK-A")
+
+    remaining = s._all_docs()
+    labels = {m.get("document_label") for _, m in remaining.values()}
+    assert "Kurul Kararı 2099/1" in labels, "sibling document was wiped"
+    assert not any(m["regulation"] == "MOCK-A" and m.get("article_number") == "1"
+                  and m.get("doc_type", "statute") == "statute"
+                  for _, m in remaining.values()), "statute chunks were not cleared"
+
+
 def test_scope_note_flags_missing_document_types():
     tmp = tempfile.mkdtemp()
     s = RegulationStore(persist_dir=tmp, use_embeddings=False)
@@ -275,12 +391,12 @@ def test_doc_types_reports_indexed_types():
 # --- Retrieval hygiene: relevance floor, diversity cap, jurisdiction routing
 
 
-def _mock_chunk(id_, text, reg, art, title=""):
+def _mock_chunk(id_, text, reg, art, title="", document_label=""):
     return Chunk(id=id_, text=text, metadata={
         "regulation": reg, "article_number": art, "article_title": title,
         "chapter": "", "chunk_index": 0, "total_chunks": 1, "source_url": "",
-        "language": "en", "doc_type": "statute", "doc_date": "",
-        "in_force": True, "document_label": ""})
+        "language": "en", "doc_type": "statute" if not document_label else "board_decision",
+        "doc_date": "", "in_force": True, "document_label": document_label})
 
 
 def test_diversity_cap_limits_chunks_per_article():
@@ -307,14 +423,21 @@ def test_diversity_cap_limits_chunks_per_article():
         "MOCK-DIV", "28"))
     s.add_chunks(chunks)
 
-    # top_k=3 matches exactly what the two relevant articles can diversely
-    # supply (2 capped from article 9 + 1 from article 6) — a larger top_k
-    # would correctly backfill extra article-9 chunks rather than
-    # under-fill, which is intended (diversity is a preference, not a
-    # reason to return fewer results than requested), so isn't what this
-    # assertion is checking.
+    # top_k=4 matches exactly what the two relevant articles can diversely
+    # supply (MAX_CHUNKS_PER_ARTICLE capped from article 9 + 1 from
+    # article 6) — a larger top_k would correctly backfill extra
+    # article-9 chunks rather than under-fill, which is intended
+    # (diversity is a preference, not a reason to return fewer results
+    # than requested), so isn't what this assertion is checking. 4, not
+    # 3: no real code path ever calls search() with top_k below 4 (every
+    # per-issue/per-clause/per-regulation floor in rag.py is 4), so this
+    # is the smallest top_k actually worth guaranteeing diversity at —
+    # matching top_k to whatever MAX_CHUNKS_PER_ARTICLE happens to be
+    # would make the cap and the budget equal and defeat the point of
+    # capping at all, which is what an earlier version of this test did
+    # when the cap was raised out from under it.
     results = s.search("encryption keys special category data",
-                       top_k=3, regulation="MOCK-DIV")
+                       top_k=4, regulation="MOCK-DIV")
     by_article: dict[str, int] = {}
     for r in results:
         by_article[r.metadata["article_number"]] = \
@@ -322,6 +445,39 @@ def test_diversity_cap_limits_chunks_per_article():
 
     assert by_article.get("9", 0) <= config.MAX_CHUNKS_PER_ARTICLE
     assert "6" in by_article, "article 6 was crowded out entirely"
+
+
+def test_diversity_cap_limits_chunks_per_document():
+    """A multi-section Board decision/RTS, where every section has a
+    DIFFERENT article_number label, must not evade the per-article cap
+    entirely and crowd out an unrelated statute article (the real
+    2026-08-21 regression: KVKK Kurul Kararı 2018/10's sections, each
+    labelled "3", "4", "5"... never collide under MAX_CHUNKS_PER_ARTICLE,
+    so it filled most of top_k and pushed KVKK Art 6 out)."""
+    tmp = tempfile.mkdtemp()
+    s = RegulationStore(persist_dir=tmp, use_embeddings=False)
+    chunks = [_mock_chunk(f"MOCK-DIV-dec-{i}",
+                          f"special category data measures part {i} encryption "
+                          f"keys separate environment special category",
+                          "MOCK-DIV", str(i), document_label="Kurul Kararı 2099/9")
+             for i in range(1, 6)]
+    chunks.append(_mock_chunk(
+        "MOCK-DIV-art6-0",
+        "special category data encryption keys must be held separately",
+        "MOCK-DIV", "6"))
+    chunks.append(_mock_chunk(
+        "MOCK-DIV-artX-0",
+        "third party ICT register contractual arrangements review annually",
+        "MOCK-DIV", "28"))
+    s.add_chunks(chunks)
+
+    results = s.search("encryption keys special category data measures",
+                       top_k=3, regulation="MOCK-DIV")
+    by_doc = sum(1 for r in results
+                if r.metadata["document_label"] == "Kurul Kararı 2099/9")
+    assert by_doc <= config.MAX_CHUNKS_PER_DOCUMENT
+    assert "6" in {r.metadata["article_number"] for r in results}, \
+        "statute article was crowded out by one multi-section document"
 
 
 def test_bm25_relative_floor_drops_weak_matches():
@@ -361,6 +517,16 @@ def test_detect_required_regulations_from_context_cues():
 
     explicit = _detect_required_regulations("Compare GDPR and KVKK encryption rules")
     assert explicit == {"GDPR", "KVKK"}
+
+    # "Kurul" (the Turkish DPA's Board) names no acronym and no other KVKK
+    # cue — a question referencing a Board decision purely by number used
+    # to detect nothing here, leaving retrieval unfiltered (v2 eval, case
+    # Q8: "Kurulun 2019/10 sayılı kararı..." answered "not in my sources"
+    # despite being indexed, because an unanchored query-rewrite let
+    # unrelated DORA content dominate).
+    kurul_only = _detect_required_regulations(
+        "Kurulun 2019/10 sayılı kararı neyi düzenliyor? Hâlâ geçerli mi?")
+    assert kurul_only == {"KVKK"}
 
 
 def test_multi_regulation_question_retrieves_all_named_regulations():
