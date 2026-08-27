@@ -350,9 +350,23 @@ _TURKISH_CHARS_RE = re.compile(r"[ığşİĞŞ]")
 # unambiguously Turkish even in ASCII form (none is an English word),
 # so matching any of them is as strong a language signal as a special
 # character.
+#
+# "madde\w*" (article/clause) and the mi/mı/mu/mü question-particle
+# pattern were both added after a live failure: "KVKK 1. Maddeyi bana
+# gosterebilirmisin" (no diacritics, and none of the words above) hit
+# none of this regex's original terms, so _language_directive (which
+# reuses this same detector via _looks_turkish) concluded the question
+# was English and answered a live Turkish question about KVKK Article 1
+# entirely in English. "madde" is arguably the single most likely word
+# in this domain to appear in a diacritic-free Turkish question and
+# was missing outright; the question-particle suffix ("...gösterebilir
+# misin", "...var mı", "...yapabilir misiniz") is a grammatical marker
+# with no English equivalent at all, so it generalizes far beyond this
+# one domain-word list.
 _TURKISH_ASCII_HINT_RE = re.compile(
     r"\b(nedir|nelerdir|hangi|gerekir|gerekiyor|zorunlu|yukumlu\w*|"
-    r"kisisel|sorumlusu|ihlali|bildirim\w*|kanun\w*|sayili|mevzuat\w*)\b",
+    r"kisisel|sorumlusu|ihlali|bildirim\w*|kanun\w*|sayili|mevzuat\w*|"
+    r"madde\w*)\b|m[iıuü]\s?s[iıuü]n\w*\b",
     re.IGNORECASE)
 
 

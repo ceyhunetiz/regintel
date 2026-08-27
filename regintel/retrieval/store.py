@@ -67,6 +67,33 @@ def _tokenize(text: str) -> list[str]:
 # _document_number_map below.
 _DOC_NUMBER_RE = re.compile(r"\d{4}/\d{1,5}")
 
+# Matches an explicit "Article N" / "Madde N" mention in EITHER word
+# order: English and formal Turkish put the word first ("Article 1",
+# "Madde 1"), but natural Turkish puts the number first ("1. Madde",
+# "1. Maddeyi", "1. Maddesi") — a request phrased that way ("KVKK 1.
+# Maddeyi gösterebilir misin?") matched neither an existing detector
+# nor, worse, ordinary hybrid search: a bare digit like "1" is one of
+# the least discriminating tokens in this corpus (nearly every
+# paragraph starts "(1)..."), so even this exact, unambiguous request
+# never reached the top of a ranked search. See _named_article_chunks.
+_ARTICLE_NUMBER_RE = re.compile(
+    r"\b(?:article|art\.?|madde)\s+(?P<num1>\d+\w*)\b"
+    r"|\b(?P<num2>\d+\w*)\.\s*madde\w*",
+    re.IGNORECASE)
+
+
+def _requested_article_numbers(query: str) -> set[str]:
+    """Article numbers explicitly named in the query — see
+    _ARTICLE_NUMBER_RE. Normalized to the plain digit form used in
+    article_number metadata; a transitional "Geçici N" article is
+    matched by its own number too since "Geçici" itself doesn't appear
+    immediately next to the number in most real phrasings, and a
+    request for the wrong (non-Geçici) sibling with the same digits is
+    harmless — it just adds one more, genuinely on-topic article.
+    """
+    return {(m.group("num1") or m.group("num2"))
+           for m in _ARTICLE_NUMBER_RE.finditer(query)}
+
 
 def _where_clause(regulation: str | None, doc_type: str | list[str] | None) -> dict | None:
     """Build a ChromaDB `where` filter from regulation + doc_type, combining
@@ -269,6 +296,53 @@ class RegulationStore:
         candidates.sort(key=lambda r: -r.score)
         return candidates[:n]
 
+    def _named_article_chunks(self, query: str, regulation: str | None,
+                              n: int) -> list[SearchResult]:
+        """Chunks of a STATUTE article the query names explicitly by
+        number ("Madde 1", "1. Maddeyi", "Article 33") — returned
+        directly rather than ranked, since a bare article number is one
+        of the least discriminating tokens in this corpus (nearly every
+        paragraph starts "(1)...") and even an exact, unambiguous ask
+        for a specific article can otherwise lose to unrelated articles
+        in ordinary hybrid search (observed live: "KVKK 1. Maddeyi
+        gösterebilir misin?" never surfaced KVKK Article 1 in the top 6
+        of an otherwise well-formed English retrieval query). Mirrors
+        _named_document_chunks's reasoning for non-statute documents,
+        including the same `n` cap: a question can name one article by
+        number while the actually-correct answer lives in a DIFFERENT
+        article entirely (eval case Q7, deliberately: "Does KVKK Article
+        9 cover special-category data?" — no, that's Article 6 — needs
+        both retrieved to say so). Reserving this article's ENTIRE text
+        unconditionally starved that other, uncited article of room in
+        the rest of the result set; capping to at most half of top_k
+        leaves that room back.
+
+        Only fires when exactly one regulation is already resolved — a
+        bare number is ambiguous across regulations, and this makes no
+        attempt to disambiguate. Checks both the plain number and its
+        "Geçici N" (transitional-article) form, since the word "Geçici"
+        doesn't reliably sit next to the number in real phrasing —
+        pulling in both when genuinely ambiguous is harmless (one more
+        on-topic article), unlike guessing wrong and returning neither.
+        """
+        if not regulation:
+            return []
+        numbers = _requested_article_numbers(query)
+        if not numbers:
+            return []
+        wanted = numbers | {f"Geçici {n}" for n in numbers}
+        self._ensure_bm25()
+        matches = [
+            SearchResult(id=id_, text=text, metadata=meta, score=1.0)
+            for id_, (text, meta) in self._bm25_docs.items()
+            if meta.get("regulation") == regulation
+            and meta.get("doc_type", "statute") == "statute"
+            and meta.get("article_number") in wanted
+        ]
+        matches.sort(key=lambda r: (r.metadata.get("article_number", ""),
+                                    r.metadata.get("chunk_index", 0)))
+        return matches[:n]
+
     # -- search ------------------------------------------------------------
 
     def search(self, query: str, top_k: int = config.DEFAULT_TOP_K,
@@ -310,6 +384,36 @@ class RegulationStore:
             fused = _rrf([lst for lst in
                          (semantic, keyword, extra_semantic, extra_keyword) if lst])
 
+        number_probe = query if not extra_query else f"{query} {extra_query}"
+
+        # A question naming a specific STATUTE ARTICLE by number ("Madde
+        # 1", "1. Maddeyi") gets that article's own chunks directly,
+        # ahead of the document-number check below — an article ask is
+        # the more specific of the two, and a bare number is too common
+        # a token (every paragraph starts "(1)...") to trust to ranking
+        # at all. See _named_article_chunks.
+        #
+        # Additive, not subtracted from top_k, unlike the document-name
+        # reservation below: a question can name one article while the
+        # actually-correct answer lives in a DIFFERENT article entirely
+        # (eval case Q7, deliberately: "Does KVKK Article 9 cover
+        # special-category data?" — no, that's Article 6, and the model
+        # needs both to say so correctly). Article 6 already ranks into
+        # the ordinary top-k on its own for that query; reserving room
+        # OUT of top_k for Article 9 pushed it back out. A named
+        # document, by contrast, is normally supplementary detail the
+        # question wasn't independently asking about, so trimming rest's
+        # budget there hasn't caused this problem.
+        article_named = self._named_article_chunks(
+            number_probe, regulation, n=min(max(top_k // 2, 1), 4))
+        if article_named:
+            article_ids = {r.id for r in article_named}
+            rest = _apply_diversity_cap(
+                [r for r in fused if r.id not in article_ids],
+                top_k,
+                config.MAX_CHUNKS_PER_ARTICLE, config.MAX_CHUNKS_PER_DOCUMENT)
+            return article_named + rest
+
         # A question naming a specific document by number ("7499",
         # "2019/10"...) gets that document's own best-matching chunks
         # reserved up front, since ordinary hybrid ranking can bury all
@@ -319,7 +423,6 @@ class RegulationStore:
         # reached the final result, even though a different one of its
         # own chunks held the actual answer). Reserves at most half of
         # top_k so there's still room for complementary context.
-        number_probe = query if not extra_query else f"{query} {extra_query}"
         named = self._named_document_chunks(number_probe, regulation,
                                              n=min(max(top_k // 2, 1), 4))
         if named:

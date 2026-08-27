@@ -9,6 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import requests
 import streamlit as st
 import streamlit.components.v1 as components
 
@@ -431,8 +432,21 @@ if question:
         # next rerun, so the visible [n] markers didn't match the source
         # list rendered under them.
         answer_box = st.empty()
-        with answer_box.container():
-            raw_answer = st.write_stream(stream)
+        try:
+            with answer_box.container():
+                raw_answer = st.write_stream(stream)
+        except requests.exceptions.ConnectionError:
+            # ApiLLM already retries a transient connection failure (a
+            # DNS blip, a VPN mid-reconnect) a couple of times before
+            # giving up — reaching here means it didn't clear up in a
+            # few seconds. Show a plain, actionable message instead of
+            # a raw traceback, which is what a bank compliance tool
+            # crashing in front of a user looks like otherwise.
+            raw_answer = ("İnternet bağlantısı kurulamadığı için yanıt "
+                         "alınamadı. Bağlantınızı kontrol edip soruyu "
+                         "tekrar gönderin.")
+            answer_box.markdown(raw_answer)
+            results = []
         # Only show sources the answer actually cited via [n] markers —
         # `results` is the raw retrieval set, which the model may have
         # partly or entirely discarded (e.g. a refusal cites nothing).

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 
@@ -21,6 +22,33 @@ def _max_tokens(reasoning: bool) -> int:
     a non-reasoning response and would truncate the answer to nothing
     once reasoning is on."""
     return config.LLM_MAX_TOKENS_REASONING if reasoning else config.LLM_MAX_TOKENS
+
+
+def _post_with_retry(url: str, headers: dict, json_payload: dict,
+                     timeout: int, stream: bool = False, retries: int = 2
+                     ) -> requests.Response:
+    """POST with a short retry for a transient CONNECTION failure — DNS
+    not resolving, a VPN mid-reconnect, Wi-Fi dropping for a second —
+    the kind that clears itself within a couple of seconds (observed
+    live: an OpenRouter request failing with a DNS NameResolutionError,
+    then succeeding cleanly on a retry moments later with no other
+    change). Only retries a failure to connect at all; a connection
+    that succeeds and returns an HTTP error status (4xx/5xx) is a real
+    response, not a connectivity problem, and is left to raise_for_status()
+    at the call site exactly as before — retrying an auth failure or a
+    bad request wouldn't help and would just triple the latency of a
+    real error.
+    """
+    last_exc: requests.exceptions.ConnectionError | None = None
+    for attempt in range(retries + 1):
+        try:
+            return requests.post(url, headers=headers, json=json_payload,
+                                 timeout=timeout, stream=stream)
+        except requests.exceptions.ConnectionError as e:
+            last_exc = e
+            if attempt < retries:
+                time.sleep(1.5 * (attempt + 1))
+    raise last_exc
 
 
 # Returned by _strip_thinking when content is None (see its docstring).
@@ -305,10 +333,10 @@ class ApiLLM(LLM):
         return payload
 
     def chat(self, system: str, user: str, reasoning: bool = False) -> str:
-        resp = requests.post(
+        resp = _post_with_retry(
             f"{self.base_url}/chat/completions",
             headers={"Authorization": f"Bearer {self.api_key}"},
-            json=self._payload(system, user, reasoning),
+            json_payload=self._payload(system, user, reasoning),
             # A thinking model can spend a long time reasoning before the
             # answer starts — 120s was already none too generous for a
             # non-reasoning compare-mode call; give reasoning real room.
@@ -323,10 +351,10 @@ class ApiLLM(LLM):
         return _stream_strip_thinking(self._stream_raw(system, user, reasoning))
 
     def _stream_raw(self, system: str, user: str, reasoning: bool = False) -> Iterator[str]:
-        resp = requests.post(
+        resp = _post_with_retry(
             f"{self.base_url}/chat/completions",
             headers={"Authorization": f"Bearer {self.api_key}"},
-            json={**self._payload(system, user, reasoning), "stream": True},
+            json_payload={**self._payload(system, user, reasoning), "stream": True},
             timeout=300 if reasoning else 120,
             stream=True,
         )
